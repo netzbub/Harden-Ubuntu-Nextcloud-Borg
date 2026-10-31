@@ -368,7 +368,8 @@ IMMO_RUN_TIME="${IMMO_RUN_TIME:-15:00}"    # systemd OnCalendar time, server tim
 IMMO_ONLINE_TIMES="${IMMO_ONLINE_TIMES:-07:00 19:00}"
 # Rev.13 (2026-10-11): mail import (angebote.py --imap) every four hours from 05:30 -
 # the daily run alone left offers waiting up to a day; empty = off. Nothing before 05:00.
-IMMO_MAIL_TIMES="${IMMO_MAIL_TIMES:-05:30 09:30 13:30 17:30 21:30}"
+# 2026-10-19 (owner): every two hours, 05:30 to 21:30.
+IMMO_MAIL_TIMES="${IMMO_MAIL_TIMES:-05:30 07:30 09:30 11:30 13:30 15:30 17:30 19:30 21:30}"
 IMMO_ALARM_TO="${IMMO_ALARM_TO:-${SMTP_ALARM_FROM:-$ADMIN_MAIL}}"   # recipient of failure mails
 # Playwright/Chromium system libraries: ~400 MB on disk, ~1 GB RAM while running.
 # Only needed if the scrapers run ON THE SERVER instead of on the local machine.
@@ -426,6 +427,26 @@ EO_MEM_LIMIT="${EO_MEM_LIMIT:-6g}"
 # --- Rev.13: phase 17, ClamAV for uploads to Nextcloud ("Antivirus for files") ---
 ENABLE_CLAMAV="${ENABLE_CLAMAV:-no}"
 AV_INFECTED_ACTION="${AV_INFECTED_ACTION:-only_log}"   # only_log | delete
+
+# --- 2026-10-31: settings made by hand on silo since 2026-10-10 (comparison of 2026-10-31) ---
+NC_OPCACHE_MB="${NC_OPCACHE_MB:-256}"     # opcache.memory_consumption; the admin overview warned at 128
+NC_QUOTA_PRESET="${NC_QUOTA_PRESET:-250 MB, 500 MB, 1 GB, 5 GB, 10 GB}"   # quota choices in the account list
+NC_THEMING_NAME="${NC_THEMING_NAME:-}"    # product name on the login page; empty = keep
+NC_THEME="${NC_THEME:-}"                  # theme dir under html/themes, CSS from $EXTRAS_DIR/nextcloud/theme-<name>-server.css
+NC_TUNNEL_DOMAIN="${NC_TUNNEL_DOMAIN:-}"  # Nextcloud also under this name, reachable only from the WireGuard net
+# Private files that do not belong into this public repository (calendar IDs, own tools,
+# own Nextcloud app, menu colours) are read from this directory; layout in phase 18.
+EXTRAS_DIR="${EXTRAS_DIR:-/root/install-extras}"
+
+# --- 2026-10-31: phase 18, owner extras (each one optional) ---
+DOKU_DOMAIN="${DOKU_DOMAIN:-}"            # static handbook behind basic auth; password in $SECRETS_IN_DIR/doku-basic-auth
+DOKU_DIR="${DOKU_DIR:-/srv/doku}"
+DOKU_USER="${DOKU_USER:-$ADMIN_USER}"
+ENABLE_DAVSYNC="${ENABLE_DAVSYNC:-no}"    # iCloud (read only) -> Nextcloud calendars and contacts (vdirsyncer)
+DAVSYNC_NC_USER="${DAVSYNC_NC_USER:-$ADMIN_USER}"
+ENABLE_MAIL_AUSWERTUNG="${ENABLE_MAIL_AUSWERTUNG:-no}"   # hourly evaluation of the server mailboxes
+ENABLE_NC_PATCH_UPDATE="${ENABLE_NC_PATCH_UPDATE:-no}"   # weekly patch updates within the Nextcloud major version
+EXTRA_ALARM_TO="${EXTRA_ALARM_TO:-${SMTP_ALARM_FROM:-$ADMIN_MAIL}}"   # failure mails of the phase-18 units
 
 # Fail early if the personal config was not loaded (skip when only showing usage):
 if [[ -n "${1:-}" && "${1:-}" != "usage" && -z "$ADMIN_USER" ]]; then
@@ -656,6 +677,37 @@ $sig
 }
 EOF
     chmod 644 "$CADDY_CONFD/10-nextcloud.caddy"
+    # 2026-10-16 (by hand on silo, into the script 2026-10-31): Nextcloud under a second
+    # name for the WireGuard clients. The name stays publicly resolvable only so Caddy
+    # gets a certificate; every request from outside the tunnel net is answered 403.
+    if [[ -n "$NC_TUNNEL_DOMAIN" ]]; then
+        cat > "$CADDY_CONFD/15-tunnel.caddy" <<EOF
+$NC_TUNNEL_DOMAIN {
+    # handle block: 'respond' comes AFTER 'handle' in Caddy's directive order.
+    @fremd not remote_ip ${WG_NET}.0/24
+    handle @fremd {
+        respond "Nur ueber den Tunnel erreichbar." 403
+    }
+    import protokoll next
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    redir /.well-known/carddav /remote.php/dav/ 301
+    redir /.well-known/caldav  /remote.php/dav/ 301
+$sig
+    handle_path /push/* {
+        reverse_proxy 127.0.0.1:7867
+    }
+
+    import nc-statisch
+
+    handle {
+        reverse_proxy 127.0.0.1:8080
+    }
+}
+EOF
+        chmod 644 "$CADDY_CONFD/15-tunnel.caddy"
+    else
+        rm -f "$CADDY_CONFD/15-tunnel.caddy"
+    fi
 }
 
 caddy_apply() {  # validate, then reload - never leave a broken config running
@@ -2171,10 +2223,12 @@ EOF
 	MaxConnectionsPerChild	0
 </IfModule>
 CONF
-    cat > /srv/nextcloud/php-silo.ini <<'CONF'
+    # 2026-10-30: the admin overview reported the OPcache buffer nearly full at 128 MB.
+    cat > /srv/nextcloud/php-silo.ini <<CONF
 ; install.sh phase 9: OPcache room for the core and ~50 extra apps
 opcache.max_accelerated_files=20000
 opcache.interned_strings_buffer=64
+opcache.memory_consumption=$NC_OPCACHE_MB
 CONF
     chmod 644 /srv/nextcloud/apache-mpm_prefork.conf /srv/nextcloud/php-silo.ini
     cat > /srv/nextcloud/docker-compose.yml <<EOF
@@ -2387,15 +2441,20 @@ for a in approval calendar camerarawpreviews classic_appmenu contacts deck \
          diskmap drawio extended_occweb files_3dmodelviewer files_accesscontrol \
          files_automatedtagging files_mindmap files_zip fileviewer forms gpxpod groupfolders \
          guests integration_openstreetmap maps memories notes phonetrack quota_warning \
-         share_audit_dashboard side_menu sketch_picker spreed tasks twofactor_webauthn; do
+         share_audit_dashboard side_menu sketch_picker spreed tasks twofactor_webauthn \
+         admincockpit announcementbanner epubviewer files_autorename files_linkeditor \
+         findling journeys ocr_search terms_of_service userrightsoverview; do
     $OCC app:install "$a" >/dev/null 2>&1 || $OCC app:enable "$a" >/dev/null 2>&1 \
         || echo "WARN: app $a not available"
 done
 # Apps that phone home or are not wanted (weather: met.no/nominatim, survey, support,
 # announcements: pushfeed.nextcloud.com) - owner's decision 2026-10-09. Tables, Collectives
 # and Better App Menu switched off by the owner on 2026-10-11 (side_menu is the menu).
+# 2026-10-31: sharebymail, systemtags, suspicious_login and twofactor_nextcloud_notification
+# are off on silo as well (comparison of 2026-10-31).
 for a in better_app_menu circles collectives federation nextcloud_announcements office \
-         recommendations support survey_client tables weather_status; do
+         recommendations support survey_client tables weather_status \
+         sharebymail systemtags suspicious_login twofactor_nextcloud_notification; do
     $OCC app:disable "$a" >/dev/null 2>&1 || true
 done
 # Rev.13 (2026-10-11): Client Push - app first (it ships the binary), then the container
@@ -2413,13 +2472,15 @@ for g in Baubeteiligte immo.flow; do $OCC group:add "$g" >/dev/null 2>&1 || true
 cs() { $OCC config:app:set core "$1" --value="$2" >/dev/null; }
 cb() { $OCC config:app:set core "$1" --type=boolean --value="$2" >/dev/null; }
 cs shareapi_allow_resharing no
-cs shareapi_default_permissions 1
+# 2026-10-27 (owner): new shares default to read, create and edit (7, was 1) and carry no
+# preset expiry date for accounts and groups (was yes); link shares keep their 14 days.
+cs shareapi_default_permissions 7
 cb shareapi_enable_link_password_by_default true
 cb shareapi_enforce_links_password true
 cb shareapi_default_expire_date true
 cb shareapi_enforce_expire_date true
 cs shareapi_expire_after_n_days 14
-cs shareapi_default_internal_expire_date yes
+cs shareapi_default_internal_expire_date no
 cs shareapi_enforce_internal_expire_date no
 cs shareapi_internal_expire_after_n_days 90
 cs shareapi_allow_public_upload no
@@ -2441,6 +2502,53 @@ done
 $OCC config:app:set federatedfilesharing federatedTrustedShareAutoAccept --value=no >/dev/null
 # Trash bin: delete after exactly 14 days.
 $OCC config:system:set trashbin_retention_obligation --value="14, 14"
+# 2026-10-31: settings made by hand on silo between 2026-10-12 and 2026-10-30.
+# No share mails: two accounts carry the owner's address, every share mailed him (2026-10-27).
+$OCC config:system:set sharing.enable_share_mail --type=boolean --value=false
+for k in verify_peer verify_peer_name; do
+    $OCC config:system:set mail_smtpstreamoptions ssl "$k" --type=boolean --value=true
+done
+$OCC config:system:set mail_smtpstreamoptions ssl allow_self_signed --type=boolean --value=false
+$OCC config:app:set files quota_preset --value="$NC_QUOTA_PRESET" >/dev/null
+[[ -z "$NC_THEMING_NAME" ]] || $OCC theming:config name "$NC_THEMING_NAME"
+# Guests: other accounts hidden, only a short app list, created by admin only.
+$OCC config:app:set guests hide_users --type=boolean --value=true >/dev/null || echo "WARN: guests hide_users"
+$OCC config:app:set guests usewhitelist --type=boolean --value=true >/dev/null || echo "WARN: guests usewhitelist"
+$OCC config:app:set guests whitelist --value="files_trashbin,files_versions,files_sharing,files_texteditor,text,activity,firstrunwizard,photos,notifications,dashboard,user_status,weather_status" >/dev/null
+$OCC config:app:set guests create_restricted_to_group --type=array --value='["admin"]' >/dev/null || echo "WARN: guests create_restricted_to_group"
+$OCC config:app:set guests allow_external_storage --type=boolean --value=false >/dev/null || echo "WARN: guests allow_external_storage"
+# Passwords: 12 characters, digits, special characters, upper and lower case.
+for k in enforceNumericCharacters enforceSpecialCharacters enforceUpperLowerCase; do
+    $OCC config:app:set password_policy "$k" --value=1 >/dev/null
+done
+$OCC config:app:set password_policy minLength --value=12 >/dev/null
+# Tunnel name (phase 9, write_caddy_nextcloud) as a further trusted domain.
+if [[ -n "$NC_TUNNEL_DOMAIN" ]] && ! $OCC config:system:get trusted_domains | grep -qxF "$NC_TUNNEL_DOMAIN"; then
+    $OCC config:system:set trusted_domains "$($OCC config:system:get trusted_domains | wc -l)" --value="$NC_TUNNEL_DOMAIN"
+fi
+# Private extras from $EXTRAS_DIR/nextcloud: menu colours (key<TAB>value), External sites
+# (JSON as stored by the app), theme CSS, and the own app Dividere (admin only).
+X="$EXTRAS_DIR/nextcloud"
+if [[ -s "$X/side_menu.conf" ]]; then
+    while IFS=$'\t' read -r k v; do
+        [[ -n "$k" ]] && $OCC config:app:set side_menu "$k" --value="$v" >/dev/null
+    done < "$X/side_menu.conf"
+fi
+if [[ -s "$X/external-sites.json" ]]; then
+    $OCC config:app:set external sites --value="$(<"$X/external-sites.json")" >/dev/null
+    $OCC config:app:set external max_site --value="$(python3 -c 'import json,sys; print(max(map(int, json.load(open(sys.argv[1])))))' "$X/external-sites.json")" >/dev/null
+fi
+if [[ -n "$NC_THEME" && -s "$X/theme-$NC_THEME-server.css" ]]; then
+    install -d -o 33 -g 33 -m 755 "/srv/nextcloud/html/themes/$NC_THEME" "/srv/nextcloud/html/themes/$NC_THEME/core" "/srv/nextcloud/html/themes/$NC_THEME/core/css"
+    install -o 33 -g 33 -m 644 "$X/theme-$NC_THEME-server.css" "/srv/nextcloud/html/themes/$NC_THEME/core/css/server.css"
+    $OCC config:system:set theme --value="$NC_THEME"
+fi
+if [[ -f "$EXTRAS_DIR/dividere/appinfo/info.xml" ]]; then
+    install -d -o 33 -g 33 -m 755 /srv/nextcloud/html/custom_apps/dividere
+    cp -R "$EXTRAS_DIR/dividere/." /srv/nextcloud/html/custom_apps/dividere/
+    chown -R 33:33 /srv/nextcloud/html/custom_apps/dividere
+    $OCC app:enable dividere --groups admin || echo "WARN: app dividere not enabled"
+fi
 # Rev.13: public key of the External sites JWT ({jwt} placeholder, ES256) for the
 # single sign-on of immo.flow (sso.php). Nextcloud creates the key pair on the first
 # page load of a logged-in user - if it is missing, run this script again later.
@@ -2484,6 +2592,8 @@ EOF
         printf 'NC_PHONE_REGION=%q\nNC_MAINT_WINDOW=%q\nNC_LOGLEVEL=%q\nNC_DOMAIN=%q\n' "$NC_PHONE_REGION" "$NC_MAINT_WINDOW" "$NC_LOGLEVEL" "$NC_DOMAIN"
         printf 'NC_MAIL_FROM=%q\nNC_MAIL_DOMAIN=%q\nSMTP_HOST=%q\nSMTP_PORT=%q\nSECRETS_IN_DIR=%q\n' \
             "$NC_MAIL_FROM" "$NC_MAIL_DOMAIN" "$SMTP_HOST" "$SMTP_PORT" "$SECRETS_IN_DIR"
+        printf 'NC_QUOTA_PRESET=%q\nNC_THEMING_NAME=%q\nNC_THEME=%q\nNC_TUNNEL_DOMAIN=%q\nEXTRAS_DIR=%q\n' \
+            "$NC_QUOTA_PRESET" "$NC_THEMING_NAME" "$NC_THEME" "$NC_TUNNEL_DOMAIN" "$EXTRAS_DIR"
     } > /etc/nc-post-setup.env
     chmod 600 /etc/nc-post-setup.env
 
@@ -3311,6 +3421,23 @@ EOF
         } > /etc/systemd/system/immo-mail.timer
         chmod 644 /etc/systemd/system/immo-mail.service /etc/systemd/system/immo-mail.timer 2>/dev/null || true
     fi
+    # 2026-10-19 (by hand on silo, into the script 2026-10-31): a run requested from the
+    # immo.flow web page ("Abruf von Hand"). The timer only looks once a minute; lauf.py
+    # --anforderung returns at once when nothing is requested. Same sandbox as the daily run.
+    sed -e 's/^Description=.*/Description=immo.flow run on request/' \
+        -e 's/^\(ExecStart=.*lauf\.py\)$/\1 --anforderung/' \
+        -e 's/^TimeoutStartSec=.*/TimeoutStartSec=5400/' \
+        /etc/systemd/system/immo-lauf.service > /etc/systemd/system/immo-anforderung.service
+    cat > /etc/systemd/system/immo-anforderung.timer <<'EOF'
+[Unit]
+Description=immo.flow run on request (looks every minute)
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 644 /etc/systemd/system/immo-anforderung.service /etc/systemd/system/immo-anforderung.timer
     # Rev.13: one failure-mail template for every immo unit, with the unit name in the
     # subject and sent through the alarm account when it exists. The old single
     # immo-fail-mail.service mailed root and covered immo-lauf only.
@@ -3331,10 +3458,12 @@ EOF
         systemctl enable --now immo-lauf.timer
         [[ -z "$IMMO_ONLINE_TIMES" ]] || systemctl enable --now immo-online.timer
         [[ -z "$IMMO_MAIL_TIMES" || ! -s /etc/systemd/system/immo-mail.service ]] || systemctl enable --now immo-mail.timer
+        systemctl enable --now immo-anforderung.timer
     else
         systemctl disable --now immo-lauf.timer 2>/dev/null || true
         systemctl disable --now immo-online.timer 2>/dev/null || true
         systemctl disable --now immo-mail.timer 2>/dev/null || true
+        systemctl disable --now immo-anforderung.timer 2>/dev/null || true
         warn "immo-lauf.timer stays OFF - $IMMO_DIR/.venv is missing."
         warn "Deploy the code, then: systemctl enable --now immo-lauf.timer"
     fi
@@ -4033,6 +4162,219 @@ phase17() {
     log "Phase 17 done. Test: upload the EICAR test string as a file - it must be reported."
 }
 
+# 2026-10-31: phase 18 brings the parts that were built by hand on silo between 2026-10-12
+# and 2026-10-26 into the script. Everything private stays out of this public repository
+# and is read from $EXTRAS_DIR (owner's copy: install-extras/ next to the repo):
+#   davsync/config  davsync/kalender.tsv  davsync/gruppen.py  davsync/davsync-lauf
+#   mail-auswertung/mail-auswertung.py  mail-auswertung/mail-auswertung.conf
+#   nc-patch-update/nc-patch-update.sh  nc-patch-update/nc-patch-update.conf
+#   nextcloud/side_menu.conf  nextcloud/external-sites.json  nextcloud/theme-<name>-server.css
+#   dividere/   (the last four are used by nc-post-setup.sh)
+# Secrets come from $SECRETS_IN_DIR or are kept from an existing installation.
+# A configuration that already exists on the server is never overwritten: it may hold a
+# switch the owner changed on purpose (trocken = ja/nein).
+extra_fail_mail() {  # $1 = template name, $2 = subject word
+    cat > "/etc/systemd/system/$1@.service" <<EOF
+[Unit]
+Description=Failure mail for %i to $EXTRA_ALARM_TO
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'a=default; grep -q "^account alarm" /etc/msmtprc && a=alarm; { printf "To: $EXTRA_ALARM_TO\\nSubject: $2 FEHLER %i auf %H\\n\\n"; journalctl -u %i -n 50 --no-pager; } | /usr/bin/msmtp -a \$\$a $EXTRA_ALARM_TO'
+EOF
+    chmod 644 "/etc/systemd/system/$1@.service"
+}
+
+install_extra() {  # $1 = source below $EXTRAS_DIR, $2 = target, $3 = mode, $4 = owner (optional), $5 = keep
+    local src="$EXTRAS_DIR/$1"
+    if [[ -n "${5:-}" && -e "$2" ]]; then log "  $2 kept"; return 0; fi
+    [[ -s "$src" ]] || { warn "  $src missing - $2 not written"; return 1; }
+    install -m "$3" -o "${4:-root}" -g "${4:-root}" "$src" "$2"
+}
+
+phase18() {
+    require_root
+    log "Phase 18: owner extras (tunnel site comes with phase 9, Nextcloud settings with nc-post-setup.sh)"
+
+    # --- doku: static handbook (Quartz build) behind basic auth, since 2026-10-16
+    if [[ -n "$DOKU_DOMAIN" ]]; then
+        dns_gate "$DOKU_DOMAIN"
+        install -d -o root -g root -m 755 "$DOKU_DIR"
+        local hash="" ba=basic_auth f="$CADDY_CONFD/30-doku.caddy"
+        caddy version 2>/dev/null | grep -qE '^v2\.[0-7]\.' && ba=basicauth
+        if [[ -s "$SECRETS_IN_DIR/doku-basic-auth" ]]; then
+            # hash-password reads stdin without a tty and needs the newline (see fritz-ip).
+            hash="$(printf '%s\n' "$(head -1 "$SECRETS_IN_DIR/doku-basic-auth")" | caddy hash-password 2>/dev/null || true)"
+        elif [[ -s "$f" ]]; then
+            hash="$(awk -v u="$DOKU_USER" '$1 == u && $2 ~ /^\$2/ {print $2; exit}' "$f")"
+        fi
+        [[ "$hash" == \$2* ]] || die "Phase 18: no doku password - put it into $SECRETS_IN_DIR/doku-basic-auth (one line, root 600)."
+        cat > "$f" <<EOF
+# 30-doku.caddy - handbook (install.sh phase 18). Password: $SECRETS_IN_DIR/doku-basic-auth
+$DOKU_DOMAIN {
+    import protokoll doku
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy no-referrer
+    $ba {
+        $DOKU_USER $hash
+    }
+    root * $DOKU_DIR
+    try_files {path} {path}.html {path}/index.html
+    encode zstd gzip
+    file_server
+}
+EOF
+        # The hash is not world-readable; Caddy reads the file as group caddy.
+        chown root:caddy "$f"; chmod 640 "$f"
+        caddy_apply
+        log "  doku: https://$DOKU_DOMAIN -> $DOKU_DIR (user $DOKU_USER)"
+    fi
+
+    # --- davsync: iCloud (read only) -> Nextcloud, every 15 minutes 05:00-23:45, since 2026-10-12
+    if [[ "$ENABLE_DAVSYNC" == "yes" ]]; then
+        apt-get install -y -q vdirsyncer
+        id davsync >/dev/null 2>&1 || useradd --system --user-group --create-home \
+            --home-dir /var/lib/davsync --shell /usr/sbin/nologin davsync
+        install -d -o davsync -g davsync -m 750 /var/lib/davsync
+        install -d -o davsync -g davsync -m 700 /etc/davsync
+        install -d -o root -g root -m 755 /usr/local/lib/davsync
+        install_extra davsync/config /etc/davsync/config 600 davsync keep || true
+        install_extra davsync/kalender.tsv /etc/davsync/kalender.tsv 600 davsync keep || true
+        install_extra davsync/gruppen.py /usr/local/lib/davsync/gruppen.py 644 || true
+        install_extra davsync/davsync-lauf /usr/local/sbin/davsync-lauf 755 || true
+        # Apple ID, app-specific Apple password, Nextcloud app password of $DAVSYNC_NC_USER.
+        local n src ok=yes
+        for n in apple-id apple-pw nc-pw; do
+            src="$SECRETS_IN_DIR/davsync-$n"
+            if [[ -s "$src" ]]; then install -m 600 -o davsync -g davsync "$src" "/etc/davsync/$n"; fi
+            [[ -s "/etc/davsync/$n" ]] || { warn "  davsync: /etc/davsync/$n missing - put it into $src"; ok=no; }
+        done
+        extra_fail_mail davsync-fail-mail DAVSYNC
+        cat > /etc/systemd/system/davsync.service <<'EOF'
+[Unit]
+Description=iCloud -> Nextcloud calendar and contacts sync (vdirsyncer, iCloud read-only)
+After=network-online.target docker.service
+Wants=network-online.target
+OnFailure=davsync-fail-mail@%n.service
+
+[Service]
+Type=oneshot
+User=davsync
+Group=davsync
+WorkingDirectory=/var/lib/davsync
+ExecStart=/usr/local/sbin/davsync-lauf
+TimeoutStartSec=1800
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/davsync
+EOF
+        cat > /etc/systemd/system/davsync.timer <<'EOF'
+[Unit]
+Description=iCloud -> Nextcloud sync every 15 minutes, 05:00-23:45
+
+[Timer]
+OnCalendar=*-*-* 05..23:00/15:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+        chmod 644 /etc/systemd/system/davsync.service /etc/systemd/system/davsync.timer
+        systemctl daemon-reload
+        # The target calendars must exist in Nextcloud (URI = 2nd column of kalender.tsv).
+        local occ="docker exec -u www-data nextcloud-app-1 php occ" uri
+        if docker inspect -f '{{.State.Running}}' nextcloud-app-1 2>/dev/null | grep -qx true \
+           && [[ -s /etc/davsync/kalender.tsv ]]; then
+            while IFS=$'\t' read -r _ uri _; do
+                [[ -n "$uri" ]] && $occ dav:create-calendar "$DAVSYNC_NC_USER" "$uri" >/dev/null 2>&1 || true
+            done < /etc/davsync/kalender.tsv
+        fi
+        if [[ "$ok" == yes && -s /etc/davsync/config ]]; then
+            systemctl enable --now davsync.timer
+            log "  davsync: timer on. First run by hand: sudo -u davsync /usr/local/sbin/davsync-lauf"
+            log "  (vdirsyncer asks once per pair: sudo -u davsync vdirsyncer -c /etc/davsync/config discover)"
+        else
+            systemctl disable --now davsync.timer 2>/dev/null || true
+            warn "  davsync: timer stays OFF until config and the three secrets are in place."
+        fi
+    fi
+
+    # --- mail-auswertung: evaluates the server@ and alarm@ mailboxes hourly, since 2026-10-26
+    if [[ "$ENABLE_MAIL_AUSWERTUNG" == "yes" ]]; then
+        install_extra mail-auswertung/mail-auswertung.py /usr/local/sbin/mail-auswertung.py 755 || true
+        install_extra mail-auswertung/mail-auswertung.conf /etc/mail-auswertung.conf 600 root keep || true
+        cat > /etc/systemd/system/mail-auswertung.service <<'EOF'
+[Unit]
+Description=Auswertung der Postfaecher server@ und alarm@ (Katalog, Stufen 1-3)
+After=network-online.target
+Wants=network-online.target
+OnFailure=fail-mail@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/mail-auswertung.py
+StateDirectory=mail-auswertung
+StateDirectoryMode=0700
+TimeoutStartSec=5h
+EOF
+        cat > /etc/systemd/system/mail-auswertung.timer <<'EOF'
+[Unit]
+Description=Auswertung der Postfaecher stuendlich 05.15 bis 23.15
+
+[Timer]
+OnCalendar=*-*-* 05..23:15:00
+
+[Install]
+WantedBy=timers.target
+EOF
+        chmod 644 /etc/systemd/system/mail-auswertung.service /etc/systemd/system/mail-auswertung.timer
+        systemctl daemon-reload
+        if [[ -x /usr/local/sbin/mail-auswertung.py && -s /etc/mail-auswertung.conf ]]; then
+            systemctl enable --now mail-auswertung.timer
+        else
+            warn "  mail-auswertung: timer stays OFF - script or configuration missing."
+        fi
+    fi
+
+    # --- nc-patch-update: patch updates of Nextcloud, MariaDB, Redis within their line, Sun 06:00, since 2026-10-26
+    if [[ "$ENABLE_NC_PATCH_UPDATE" == "yes" ]]; then
+        install_extra nc-patch-update/nc-patch-update.sh /usr/local/sbin/nc-patch-update.sh 755 || true
+        install_extra nc-patch-update/nc-patch-update.conf /etc/nc-patch-update.conf 600 root keep || true
+        cat > /etc/systemd/system/nc-patch-update.service <<'EOF'
+[Unit]
+Description=Patch-Updates Nextcloud, MariaDB, Redis innerhalb der Version
+After=docker.service network-online.target
+Wants=network-online.target
+OnFailure=fail-mail@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nc-patch-update.sh
+TimeoutStartSec=4h
+EOF
+        cat > /etc/systemd/system/nc-patch-update.timer <<'EOF'
+[Unit]
+Description=Nextcloud-Patch-Update sonntags 06.00
+
+[Timer]
+OnCalendar=Sun *-*-* 06:00:00
+
+[Install]
+WantedBy=timers.target
+EOF
+        chmod 644 /etc/systemd/system/nc-patch-update.service /etc/systemd/system/nc-patch-update.timer
+        systemctl daemon-reload
+        if [[ -x /usr/local/sbin/nc-patch-update.sh && -s /etc/nc-patch-update.conf ]]; then
+            systemctl enable --now nc-patch-update.timer
+        else
+            warn "  nc-patch-update: timer stays OFF - script or configuration missing."
+        fi
+    fi
+    log "Phase 18 done."
+}
+
 # ============================ VERIFY / HEALTH-CHECK ==========================
 verify() {
     require_root
@@ -4138,6 +4480,8 @@ verify() {
     chk "Nextcloud site file present"      "test -f /etc/caddy/conf.d/10-nextcloud.caddy"
     chk "Caddy serves NC static files"     "grep -q 'import nc-statisch' /etc/caddy/conf.d/10-nextcloud.caddy && curl -s -o /dev/null -D - https://$NC_DOMAIN/dist/core-common.js | grep -qi '^server: Caddy'"
     chk "NC Apache prefork and OPcache"    "docker exec nextcloud-app-1 php -r 'exit(ini_get(\"opcache.max_accelerated_files\")>=20000?0:1);' && grep -q 'MinSpareServers.*20' /srv/nextcloud/apache-mpm_prefork.conf"
+    chk "NC OPcache memory $NC_OPCACHE_MB MB" "docker exec nextcloud-app-1 php -r 'exit(ini_get(\"opcache.memory_consumption\")>=$NC_OPCACHE_MB?0:1);'"
+    [[ -z "$NC_TUNNEL_DOMAIN" ]] || chk "Tunnel site $NC_TUNNEL_DOMAIN (WireGuard only)" "grep -q 'not remote_ip ${WG_NET}.0/24' /etc/caddy/conf.d/15-tunnel.caddy && docker exec -u www-data nextcloud-app-1 php occ config:system:get trusted_domains | grep -qxF $NC_TUNNEL_DOMAIN"
     chk "Client Push (notify_push) running" "docker inspect -f '{{.State.Running}}' nextcloud-notify_push-1 | grep -qx true && grep -q 'handle_path /push/' /etc/caddy/conf.d/10-nextcloud.caddy"
     if [[ "$ENABLE_IMMO" == "yes" ]]; then
         chk "immo: php8.3-fpm running"     "systemctl is-active php8.3-fpm"
@@ -4166,6 +4510,7 @@ verify() {
         chk "immo: sendmail via msmtprc-web" "grep -q 'sendmail_path.*/etc/immo/msmtprc-web' $P"
         chk "immo: PHP error log writable"  "[[ \"\$(stat -c %U /var/log/php8.3-fpm-immo-web.log 2>/dev/null)\" == $IMMO_WEB_USER ]]"
         chk "immo: deploy/run sudo rule"    "visudo -cf /etc/sudoers.d/immo >/dev/null && test -x /usr/local/sbin/immo-deploy && test -x /usr/local/sbin/immo-run"
+        chk "immo: run-on-request timer active" "systemctl is-active -q immo-anforderung.timer && grep -q 'lauf.py --anforderung' /etc/systemd/system/immo-anforderung.service"
         [[ -z "$IMMO_MAIL_TIMES" ]] || chk "immo: mail import timer active" "systemctl is-active -q immo-mail.timer && grep -q 'angebote.py --imap' /etc/systemd/system/immo-mail.service"
         chk "immo: failure mails via template" "grep -q 'immo-fail-mail@' /etc/systemd/system/immo-lauf.service && test ! -e /etc/systemd/system/immo-fail-mail.service"
         chk "immo: reports on data volume" "test -d \"$HDD_MOUNT/immo/Kaufpreise\""
@@ -4222,6 +4567,11 @@ verify() {
         chk "Talk: Janus ws on loopback only" "ss -tln | grep -q '127.0.0.1:8188' && ! ss -tln | grep ':8188' | grep -vq '127.0.0.1'"
         chk "Talk: Janus rebuild timer"     "systemctl is-active -q janus-rebuild.timer"
     fi
+    # 2026-10-31: phase 18
+    [[ -z "$DOKU_DOMAIN" ]] || chk "doku site with password"          "grep -qE 'basic_?auth' /etc/caddy/conf.d/30-doku.caddy && test \"\$(curl -s -o /dev/null -w '%{http_code}' https://$DOKU_DOMAIN/)\" = 401"
+    [[ "$ENABLE_DAVSYNC" != "yes" ]] || chk "davsync timer active"       "systemctl is-active -q davsync.timer"
+    [[ "$ENABLE_MAIL_AUSWERTUNG" != "yes" ]] || chk "mail-auswertung timer active" "systemctl is-active -q mail-auswertung.timer"
+    [[ "$ENABLE_NC_PATCH_UPDATE" != "yes" ]] || chk "nc-patch-update timer active" "systemctl is-active -q nc-patch-update.timer"
     if [[ "$ENABLE_CLAMAV" == "yes" ]]; then
         chk "ClamAV daemon socket"        "test -S /var/run/clamav/clamd.ctl"
         chk "NC files_antivirus enabled"   "docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -q files_antivirus"
@@ -4286,9 +4636,10 @@ usage() {
     echo "  phase13  immo.flow (ENABLE_IMMO)        phase14  further static sites (ENABLE_EXTRA_SITES)"
     echo "  phase15  Talk HPB  (ENABLE_TALK_HPB)        phase16  Euro-Office (ENABLE_OFFICE)"
     echo "  phase17  ClamAV for Nextcloud uploads (ENABLE_CLAMAV)"
+    echo "  phase18  owner extras: DOKU_DOMAIN, ENABLE_DAVSYNC, ENABLE_MAIL_AUSWERTUNG, ENABLE_NC_PATCH_UPDATE"
     echo "Maintenance: caddy-base  (rebuild Caddyfile + Nextcloud site after an upgrade to Rev.10)"
     echo "             f2b-ignore  (rewrite the fail2ban exemptions)   fritz-ip  (office line report, FRITZ_IP_DOMAIN)"
-    echo "Meta: bootstrap (0-2, stops at the login test)  rest (3-11, 13-17, upgrade, 12 + verify + lynis)  all (everything with the stop)"
+    echo "Meta: bootstrap (0-2, stops at the login test)  rest (3-11, 13-18, upgrade, 12 + verify + lynis)  all (everything with the stop)"
     echo "Audit: lynis (writes \$TESTS_DIR/30-lynis.log)"
 }
 
@@ -4300,7 +4651,7 @@ main() {
         phase4) phase4 ;; phase5) phase5 ;; phase6) phase6 ;;
         phase7) phase7 ;; phase8) phase8 ;;
         phase9) phase9 ;; phase10) phase10 ;; phase11) phase11 ;; phase12) phase12 ;;
-        phase13) phase13 ;; phase14) phase14 ;; phase15) phase15 ;; phase16) phase16 ;; phase17) phase17 ;;
+        phase13) phase13 ;; phase14) phase14 ;; phase15) phase15 ;; phase16) phase16 ;; phase17) phase17 ;; phase18) phase18 ;;
         caddy-base)
             # Rev.10: rebuild only the Caddy structure (main file + Nextcloud site).
             # Needed on a server installed before Rev.10, whose Caddyfile is still
@@ -4343,7 +4694,7 @@ main() {
             # final upgrade - its own comment always demanded that; before, the baseline
             # knew nothing of MariaDB, PHP-FPM, coturn or the immo units.
             phase3; phase4; phase5; phase6; phase7; phase8; phase9; phase10; phase11
-            phase13; phase14; setup_fritz_ip; phase15; phase16; phase17
+            phase13; phase14; setup_fritz_ip; phase15; phase16; phase17; phase18
             apt-get update -q && apt-get full-upgrade -y -q
             phase12
             verify || true
@@ -4362,7 +4713,7 @@ main() {
             # Council-Fix 4 used to ask about the offline copy HERE, after phase2 - too
             # late to prevent a lock-out. password_gate above does it before phase2.
             phase3; phase4; phase5; phase6; phase7; phase8; phase9; phase10; phase11
-            phase13; phase14; setup_fritz_ip; phase15; phase16; phase17
+            phase13; phase14; setup_fritz_ip; phase15; phase16; phase17; phase18
             apt-get update -q && apt-get full-upgrade -y -q
             phase12          # Rev.13: last, see 'rest'
             verify || true   # one open point must not swallow the final notes (Review M7)

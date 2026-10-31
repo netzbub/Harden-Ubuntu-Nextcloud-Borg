@@ -113,3 +113,21 @@ SMTP_FROM="admin@example.com"
 # --- Optional phase 17 (Rev.13): ClamAV for uploads to Nextcloud ---
 # ENABLE_CLAMAV="no"
 # AV_INFECTED_ACTION="only_log"      # only_log | delete
+
+# --- 2026-10-31: Nextcloud settings and tunnel name (phase 9, nc-post-setup.sh) ---
+# NC_OPCACHE_MB="256"
+# NC_QUOTA_PRESET="250 MB, 500 MB, 1 GB, 5 GB, 10 GB"
+# NC_THEMING_NAME="example"
+# NC_THEME=""                         # CSS from $EXTRAS_DIR/nextcloud/theme-<name>-server.css
+# NC_TUNNEL_DOMAIN="tunnel.example.com"   # reachable only from the WireGuard net
+# EXTRAS_DIR="/root/install-extras"   # private files, never in this repository (layout: phase 18)
+
+# --- Optional phase 18 (2026-10-31): owner extras ---
+# DOKU_DOMAIN="doku.example.com"      # password in $SECRETS_IN_DIR/doku-basic-auth
+# DOKU_DIR="/srv/doku"
+# DOKU_USER="admin"
+# ENABLE_DAVSYNC="no"                 # secrets: $SECRETS_IN_DIR/davsync-apple-id, -apple-pw, -nc-pw
+# DAVSYNC_NC_USER="admin"
+# ENABLE_MAIL_AUSWERTUNG="no"
+# ENABLE_NC_PATCH_UPDATE="no"
+# EXTRA_ALARM_TO="alarm@example.com"
