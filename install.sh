@@ -612,7 +612,31 @@ write_caddy_nextcloud() {
     fi
     # Rev.13: HSTS one year on every site - internet.nl rates 180 days as insufficient
     # (test of 2026-10-11, all four names 78 %).
+    # FIXED 2026-10-29 (measured on silo): static assets went through Apache prefork in the
+    # container; on a page load (~380 requests) JS/CSS waited up to 5 s behind PHP requests
+    # holding the Redis session lock. Caddy now serves JS, CSS, images and fonts straight
+    # from the Nextcloud dir, with the Cache-Control headers of Nextcloud's .htaccess.
+    # The snippet is defined here so other sites (e.g. a tunnel name) can import it too.
     cat > "$CADDY_CONFD/10-nextcloud.caddy" <<EOF
+(nc-statisch) {
+    @statisch {
+        path_regexp ^/(core|dist|apps|custom_apps|themes|resources)/.+\\.(css|js|mjs|svg|gif|png|jpg|jpeg|webp|ico|wasm|tflite|otf|ttf|woff|woff2|map)\$
+        file {
+            root /srv/nextcloud/html
+        }
+    }
+    handle @statisch {
+        root * /srv/nextcloud/html
+        header X-Content-Type-Options "nosniff"
+        header X-Robots-Tag "noindex, nofollow"
+        @mitv query v=*
+        @ohnev not query v=*
+        header @mitv Cache-Control "max-age=15778463, immutable"
+        header @ohnev Cache-Control "max-age=15778463"
+        encode zstd gzip
+        file_server
+    }
+}
 $NC_DOMAIN {
     import protokoll next
     header Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -623,6 +647,8 @@ $sig
     handle_path /push/* {
         reverse_proxy 127.0.0.1:7867
     }
+
+    import nc-statisch
 
     handle {
         reverse_proxy 127.0.0.1:8080
@@ -2132,6 +2158,25 @@ EOF
     if [[ "$ENABLE_CLAMAV" == "yes" ]]; then
         NC_CLAMAV_MOUNT=$'\n      - /var/run/clamav:/var/run/clamav:ro'
     fi
+    # FIXED 2026-10-29: the image keeps only 5-10 idle Apache children (prefork) and spawns
+    # more slowly; a page load of ~240 parallel requests queued for seconds. OPcache had room
+    # for 10000 files, tight for the core plus ~50 extra apps. Both as read-only mounts.
+    cat > /srv/nextcloud/apache-mpm_prefork.conf <<'CONF'
+# install.sh phase 9: keep more Apache children ready (image default 5/5/10).
+<IfModule mpm_prefork_module>
+	StartServers		20
+	MinSpareServers		20
+	MaxSpareServers		40
+	MaxRequestWorkers	150
+	MaxConnectionsPerChild	0
+</IfModule>
+CONF
+    cat > /srv/nextcloud/php-silo.ini <<'CONF'
+; install.sh phase 9: OPcache room for the core and ~50 extra apps
+opcache.max_accelerated_files=20000
+opcache.interned_strings_buffer=64
+CONF
+    chmod 644 /srv/nextcloud/apache-mpm_prefork.conf /srv/nextcloud/php-silo.ini
     cat > /srv/nextcloud/docker-compose.yml <<EOF
 services:
   db:
@@ -2186,6 +2231,8 @@ services:
     volumes:
       - ./html:/var/www/html
       - ${NCDATA_DIR}:/var/www/html/data   # data dir = HDD, separate from the NC dir$NC_CLAMAV_MOUNT
+      - ./apache-mpm_prefork.conf:/etc/apache2/mods-available/mpm_prefork.conf:ro
+      - ./php-silo.ini:/usr/local/etc/php/conf.d/zz-silo.ini:ro
     environment:
       MYSQL_HOST: db
       MYSQL_DATABASE: nextcloud
@@ -2259,6 +2306,8 @@ failregex = ^\{%(_groupsre)s,?\s*"remoteAddr":"<HOST>"%(_groupsre)s,?\s*"message
             ^\{%(_groupsre)s,?\s*"remoteAddr":"<HOST>"%(_groupsre)s,?\s*"message":"Trusted domain error.
 datepattern = ,?\s*"time"\s*:\s*"%%Y-%%m-%%d[T ]%%H:%%M:%%S(%%z)?"
 EOF
+        # Owner's decision 2026-10-29: three typos (account name vs. display name) banned the
+        # office for an hour on 2026-10-28; five failed logins within 10 min now.
         cat > /etc/fail2ban/jail.d/nextcloud.local <<EOF
 [nextcloud]
 enabled  = true
@@ -2266,7 +2315,7 @@ backend  = auto
 port     = 80,443
 filter   = nextcloud
 logpath  = ${NCDATA_DIR}/nextcloud.log
-maxretry = 3
+maxretry = 5
 EOF
         # Create the log file UP FRONT (Review H2 logic): if missing, fail2ban aborts
         # the whole jail on the next (reboot) start - even the sshd jail would be gone.
@@ -4087,6 +4136,8 @@ verify() {
     # Rev.10 - Caddy split into one file per site:
     chk "Caddyfile imports conf.d"         "grep -q 'import /etc/caddy/conf.d' /etc/caddy/Caddyfile"
     chk "Nextcloud site file present"      "test -f /etc/caddy/conf.d/10-nextcloud.caddy"
+    chk "Caddy serves NC static files"     "grep -q 'import nc-statisch' /etc/caddy/conf.d/10-nextcloud.caddy && curl -s -o /dev/null -D - https://$NC_DOMAIN/dist/core-common.js | grep -qi '^server: Caddy'"
+    chk "NC Apache prefork and OPcache"    "docker exec nextcloud-app-1 php -r 'exit(ini_get(\"opcache.max_accelerated_files\")>=20000?0:1);' && grep -q 'MinSpareServers.*20' /srv/nextcloud/apache-mpm_prefork.conf"
     chk "Client Push (notify_push) running" "docker inspect -f '{{.State.Running}}' nextcloud-notify_push-1 | grep -qx true && grep -q 'handle_path /push/' /etc/caddy/conf.d/10-nextcloud.caddy"
     if [[ "$ENABLE_IMMO" == "yes" ]]; then
         chk "immo: php8.3-fpm running"     "systemctl is-active php8.3-fpm"

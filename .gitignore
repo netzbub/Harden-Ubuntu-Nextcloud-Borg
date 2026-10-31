@@ -22,3 +22,4 @@ hostishere_server_ticket.md
 # Python bytecode of the helper scripts in tools/
 __pycache__/
 *.pyc
+.env
