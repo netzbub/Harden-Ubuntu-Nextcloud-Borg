@@ -2094,6 +2094,17 @@ EOF
     # 'systemctl stop docker' leaves the containers running on the OLD mount. Stop the
     # containers that bind $HDD_MOUNT ('docker compose stop app cron') before the final
     # rsync and start them again after the remount (seen 2026-10-11).
+    # Replacing a failed HDD and restoring from a copy (seen 2026-11-02):
+    #   - Move $HDD_MOUNT/immo aside before mounting the new volume, otherwise the
+    #     reports vanish under the mount; copy them back afterwards.
+    #   - A copy restored with 'rsync -a src/ $NCDATA_DIR/' takes the owner of the
+    #     copy's top directory; if that is root, NC stops with "data directory is
+    #     invalid / not readable". Re-run phase9 (it sets 33:33 below) or chown 33:33.
+    #   - Without the users' files every user needs an empty '<user>/files' in
+    #     $NCDATA_DIR, otherwise 'occ files:scan --all' reports "exists in cache but
+    #     not on disk". Then: occ files:scan --all, groupfolders:scan --all,
+    #     files:scan-app-data, files:cleanup, trashbin:cleanup --all-users, versions:cleanup.
+    #   - Restart fail2ban afterwards: its nextcloud jail reads $NCDATA_DIR/nextcloud.log.
     install -d "$HDD_MOUNT"
     if ! mountpoint -q "$HDD_MOUNT"; then
         warn "HDD is NOT mounted at $HDD_MOUNT - NC data would land on the NVMe!"
@@ -4424,6 +4435,7 @@ verify() {
     chk "Cockpit root login blocked"       "grep -qx root /etc/cockpit/disallowed-users"
     chk "no Portainer container"           "! docker ps -a --format '{{.Names}}' | grep -qx portainer"
     chk "HDD mounted ($HDD_MOUNT)"         "mountpoint -q $HDD_MOUNT"
+    chk "NC data dir owned by www-data"    "[[ \$(stat -c %u:%g $NCDATA_DIR 2>/dev/null) == 33:33 ]]"
     # Rev.8: 1% on volumes >= 1 TB, 5% below - so accept the whole band instead of
     # pinning 5%, and only reject 0 (no reserve at all) or an absurdly large reserve.
     # In PER MILLE, not percent: tune2fs rounds the reserved-block count DOWN, so at
