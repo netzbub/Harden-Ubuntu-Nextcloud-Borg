@@ -2105,6 +2105,9 @@ EOF
     #     not on disk". Then: occ files:scan --all, groupfolders:scan --all,
     #     files:scan-app-data, files:cleanup, trashbin:cleanup --all-users, versions:cleanup.
     #   - Restart fail2ban afterwards: its nextcloud jail reads $NCDATA_DIR/nextcloud.log.
+    #   - A Borg repository restored from an older copy fails with "security directory is
+    #     newer than repository". Remove /root/.config/borg/security/<repo id>/manifest-timestamp
+    #     and /root/.cache/borg/<repo id>, keep the nonce file (seen 2026-11-03).
     install -d "$HDD_MOUNT"
     if ! mountpoint -q "$HDD_MOUNT"; then
         warn "HDD is NOT mounted at $HDD_MOUNT - NC data would land on the NVMe!"
