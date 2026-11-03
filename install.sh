@@ -2560,6 +2560,16 @@ if [[ -f "$EXTRAS_DIR/dividere/appinfo/info.xml" ]]; then
     chown -R 33:33 /srv/nextcloud/html/custom_apps/dividere
     $OCC app:enable dividere --groups admin || echo "WARN: app dividere not enabled"
 fi
+# 2026-11-03: account template from $EXTRAS_DIR/nextcloud/skeleton (the owner's standard
+# folders Templates, Photos, Documents). Nextcloud copies it into a new account on its first
+# login; existing accounts are not touched. It lives in the data dir because the container
+# sees only that and its own html tree, and the html tree is replaced on every update.
+if [[ -d "$X/skeleton" && -n "${NCDATA_DIR:-}" ]]; then
+    install -d -o 33 -g 33 -m 750 "$NCDATA_DIR/skeleton-brill"
+    rsync -a --delete "$X/skeleton/" "$NCDATA_DIR/skeleton-brill/"
+    chown -R 33:33 "$NCDATA_DIR/skeleton-brill"
+    $OCC config:system:set skeletondirectory --value=/var/www/html/data/skeleton-brill >/dev/null
+fi
 # Rev.13: public key of the External sites JWT ({jwt} placeholder, ES256) for the
 # single sign-on of immo.flow (sso.php). Nextcloud creates the key pair on the first
 # page load of a logged-in user - if it is missing, run this script again later.
@@ -2603,8 +2613,8 @@ EOF
         printf 'NC_PHONE_REGION=%q\nNC_MAINT_WINDOW=%q\nNC_LOGLEVEL=%q\nNC_DOMAIN=%q\n' "$NC_PHONE_REGION" "$NC_MAINT_WINDOW" "$NC_LOGLEVEL" "$NC_DOMAIN"
         printf 'NC_MAIL_FROM=%q\nNC_MAIL_DOMAIN=%q\nSMTP_HOST=%q\nSMTP_PORT=%q\nSECRETS_IN_DIR=%q\n' \
             "$NC_MAIL_FROM" "$NC_MAIL_DOMAIN" "$SMTP_HOST" "$SMTP_PORT" "$SECRETS_IN_DIR"
-        printf 'NC_QUOTA_PRESET=%q\nNC_THEMING_NAME=%q\nNC_THEME=%q\nNC_TUNNEL_DOMAIN=%q\nEXTRAS_DIR=%q\n' \
-            "$NC_QUOTA_PRESET" "$NC_THEMING_NAME" "$NC_THEME" "$NC_TUNNEL_DOMAIN" "$EXTRAS_DIR"
+        printf 'NC_QUOTA_PRESET=%q\nNC_THEMING_NAME=%q\nNC_THEME=%q\nNC_TUNNEL_DOMAIN=%q\nEXTRAS_DIR=%q\nNCDATA_DIR=%q\n' \
+            "$NC_QUOTA_PRESET" "$NC_THEMING_NAME" "$NC_THEME" "$NC_TUNNEL_DOMAIN" "$EXTRAS_DIR" "$NCDATA_DIR"
     } > /etc/nc-post-setup.env
     chmod 600 /etc/nc-post-setup.env
 
@@ -4180,6 +4190,7 @@ phase17() {
 #   mail-auswertung/mail-auswertung.py  mail-auswertung/mail-auswertung.conf
 #   nc-patch-update/nc-patch-update.sh  nc-patch-update/nc-patch-update.conf
 #   nextcloud/side_menu.conf  nextcloud/external-sites.json  nextcloud/theme-<name>-server.css
+#   nextcloud/skeleton/   (account template, 2026-11-03)
 #   dividere/   (the last four are used by nc-post-setup.sh)
 # Secrets come from $SECRETS_IN_DIR or are kept from an existing installation.
 # A configuration that already exists on the server is never overwritten: it may hold a
