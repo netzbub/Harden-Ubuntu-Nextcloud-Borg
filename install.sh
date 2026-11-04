@@ -2449,15 +2449,16 @@ fi
 $OCC app:install previewgenerator 2>/dev/null || $OCC app:enable previewgenerator
 $OCC app:install external 2>/dev/null || $OCC app:enable external
 # Rev.13: app set and sharing policy of silo as measured on 2026-10-11 (set by hand on
-# 2026-10-09). eurooffice and files_antivirus come from phase16/17. A missing app is
-# reported, not fatal - the app store may lag behind a new Nextcloud release.
+# 2026-10-09; done added 2026-11-04, installed by hand on silo). eurooffice and
+# files_antivirus come from phase16/17. A missing app is reported, not fatal - the app
+# store may lag behind a new Nextcloud release.
 for a in approval calendar camerarawpreviews classic_appmenu contacts deck \
          diskmap drawio extended_occweb files_3dmodelviewer files_accesscontrol \
          files_automatedtagging files_mindmap files_zip fileviewer forms gpxpod groupfolders \
          guests integration_openstreetmap maps memories notes phonetrack quota_warning \
          share_audit_dashboard side_menu sketch_picker spreed tasks twofactor_webauthn \
          admincockpit announcementbanner epubviewer files_autorename files_linkeditor \
-         findling journeys ocr_search terms_of_service userrightsoverview; do
+         findling journeys ocr_search terms_of_service userrightsoverview done; do
     $OCC app:install "$a" >/dev/null 2>&1 || $OCC app:enable "$a" >/dev/null 2>&1 \
         || echo "WARN: app $a not available"
 done

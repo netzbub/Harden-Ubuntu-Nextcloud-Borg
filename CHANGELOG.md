@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Versions follow a SemVe
 ## [Unreleased] - Rev. 13, in progress
 
 ### Changed
+- **App Done in the app set** (2026-11-04, found by comparing the test server with silo): installed by hand on silo, now in the list of `nc-post-setup.sh`.
 - **Phase 18 goes on without the doku password** (2026-11-04, test run): a missing `$SECRETS_IN_DIR/doku-basic-auth` aborted phase 18, so davsync, mail-auswertung and nc-patch-update were never set up. The handbook site is now skipped with a warning.
 - **fritz-ip without a password no longer aborts the run** (2026-11-04, found in the test run on a fresh server): `setup_fritz_ip` warns and skips when neither `$SECRETS_IN_DIR/fritz-ip` nor the hash exists, so `rest` and `all` go on to phases 15 to 18.
 - **No info mails from Nextcloud** (2026-11-04, as on silo): `nc-post-setup.sh` turns every activity mail off for new accounts (group membership, Talk and circles were on) and sets the notifications reminder mail to never. Share mails were already off. The bell in the web interface stays.
