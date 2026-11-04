@@ -4236,7 +4236,11 @@ phase18() {
         elif [[ -s "$f" ]]; then
             hash="$(awk -v u="$DOKU_USER" '$1 == u && $2 ~ /^\$2/ {print $2; exit}' "$f")"
         fi
-        [[ "$hash" == \$2* ]] || die "Phase 18: no doku password - put it into $SECRETS_IN_DIR/doku-basic-auth (one line, root 600)."
+        # 2026-11-04 (test run on a fresh server): a missing password used to abort phase 18
+        # here, so davsync, mail-auswertung and nc-patch-update were never set up.
+        if [[ "$hash" != \$2* ]]; then
+            warn "Phase 18: doku skipped - no password; put it into $SECRETS_IN_DIR/doku-basic-auth (one line, root 600), then run phase18 again."
+        else
         cat > "$f" <<EOF
 # 30-doku.caddy - handbook (install.sh phase 18). Password: $SECRETS_IN_DIR/doku-basic-auth
 $DOKU_DOMAIN {
@@ -4257,6 +4261,7 @@ EOF
         chown root:caddy "$f"; chmod 640 "$f"
         caddy_apply
         log "  doku: https://$DOKU_DOMAIN -> $DOKU_DIR (user $DOKU_USER)"
+        fi
     fi
 
     # --- davsync: iCloud (read only) -> Nextcloud, every 15 minutes 05:00-23:45, since 2026-10-12
