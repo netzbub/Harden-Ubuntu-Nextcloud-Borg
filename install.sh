@@ -3585,7 +3585,12 @@ setup_fritz_ip() {  # office line report: FRITZ!Box DynDNS -> Caddy -> fail2ban 
         printf '%s\n' "$hash" > "$hashf"
         log "fritz-ip: new password hash from $pwf (delete that file now)."
     fi
-    [[ -s "$hashf" ]] || die "fritz-ip: no password - put it into $pwf (one line, root 600)."
+    # 2026-11-04 (test run on a fresh server): a missing password used to abort the whole run
+    # at this optional extra. Now it is skipped with a warning; run setup again once it is there.
+    if [[ ! -s "$hashf" ]]; then
+        warn "fritz-ip skipped: no password - put it into $pwf (one line, root 600), then run this part again."
+        return 0
+    fi
     hash="$(< "$hashf")"
     # basic_auth is the directive name from Caddy 2.8 on; older versions know basicauth.
     dir=basic_auth
