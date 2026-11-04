@@ -2479,10 +2479,14 @@ if $OCC app:install notify_push >/dev/null 2>&1 || $OCC app:enable notify_push >
 else
     echo "WARN: app notify_push not available"
 fi
-for g in Baubeteiligte immo.flow; do $OCC group:add "$g" >/dev/null 2>&1 || true; done
+# 2026-11-04 (owner): group Baubeteiligte dropped. immo.flow (shown as "immo") grants access
+# to immo.flow; Linksperre holds every account except the owner and may not create links.
+# New accounts have to be added to Linksperre by hand.
+$OCC group:add --display-name=immo immo.flow >/dev/null 2>&1 || true
+$OCC group:add Linksperre >/dev/null 2>&1 || true
 # Sharing: no resharing, read-only by default, links only with password and max. 14 days,
 # no upload via links, sharing only within the own group (admin exempt), no links for
-# Baubeteiligte, no federation, no global address book.
+# Linksperre, no federation, no global address book.
 cs() { $OCC config:app:set core "$1" --value="$2" >/dev/null; }
 cb() { $OCC config:app:set core "$1" --type=boolean --value="$2" >/dev/null; }
 cs shareapi_allow_resharing no
@@ -2502,7 +2506,7 @@ cs shareapi_allow_view_without_download no
 cb shareapi_allow_federation_on_public_shares false
 cs shareapi_only_share_with_group_members yes
 cs shareapi_only_share_with_group_members_exclude_group_list '["admin"]'
-cs shareapi_allow_links_exclude_groups '["Baubeteiligte"]'
+cs shareapi_allow_links_exclude_groups '["Linksperre"]'
 cs shareapi_restrict_user_enumeration_to_group yes
 cs shareapi_restrict_user_enumeration_full_match yes
 cs shareapi_restrict_user_enumeration_full_match_user_id yes

@@ -4,6 +4,9 @@ All notable changes to this project are documented here. Versions follow a SemVe
 
 ## [Unreleased] - Rev. 13, in progress
 
+### Changed
+- **Group Linksperre replaces Baubeteiligte** (2026-11-04, as on silo since 2026-11-03): `nc-post-setup.sh` no longer creates the group Baubeteiligte, which the owner never used. It creates `Linksperre`, which holds every account except the owner, and sets `shareapi_allow_links_exclude_groups` to `["Linksperre"]`. Nextcloud blocks link creation for an account that is in any excluded group, admins included, so a separate group is the only way to leave links to the owner alone. New accounts are added to Linksperre by hand. The group immo.flow is created with the display name "immo".
+
 ### Removed
 - **Legal login banner gone** (2026-10-16, Rev. 14). The bilingual "Authorised access only" text in `/etc/issue` and `/etc/issue.net`, the sshd `Banner` directive and the Cockpit `Banner=` line are removed, together with the two `verify` checks for them. It never deterred anyone; it only existed because Lynis BANN-7126/7130 ask for it. Those two Lynis tests now stay open by decision. `/etc/issue` holds Ubuntu's own default line again, `/etc/issue.net` is empty.
 
