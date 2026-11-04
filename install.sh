@@ -2730,10 +2730,16 @@ fi
 # Nextcloud blobs (a copy of what is synced on the Mac; decision 2026-07-08).
 # Before v0.6.3 the whole of $HDD_MOUNT was excluded, which silently left
 # $HDD_MOUNT/immo - the market reports, which exist nowhere else - unsaved.
+# 2026-11-04: borg exits 1 on a WARNING, e.g. "file changed while we backed it up"
+# for the live systemd journal. The archive is complete then; under set -e the
+# script used to stop here, skipping prune/compact/check and raising the failure
+# alarm (production server 2026-10-28 and 2026-11-04). Only rc >= 2 is an error.
+rc=0
 borg create --compression zstd,6 --stats \\
     --exclude '/srv/nextcloud/db' --exclude '$BACKUP_DIR' --exclude '$NCDATA_DIR' \\
     "\$REPO::{now:%Y-%m-%d_%H%M}" \\
-    /srv /etc /var/backups /home /root/.ssh /var/log/journal
+    /srv /etc /var/backups /home /root/.ssh /var/log/journal || rc=\$?
+if (( rc > 1 )); then exit "\$rc"; fi
 
 if [[ \$NC_RUNNING -eq 1 ]]; then
     \$COMPOSE exec -T -u www-data app php occ maintenance:mode --off
