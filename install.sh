@@ -2444,7 +2444,7 @@ if [[ -n "$NC_MAIL_FROM" && -n "$NC_MAIL_DOMAIN" && -s "$SECRETS_IN_DIR/smtp-nex
 else
     echo "Nextcloud mail NOT configured (NC_MAIL_FROM/NC_MAIL_DOMAIN or $SECRETS_IN_DIR/smtp-next missing)."
 fi
-# Rev.13: preview generator (timer nc-preview, 06:15) and External sites (immo.flow
+# Rev.13: preview generator (own background job every 5 minutes) and External sites (immo.flow
 # inside Nextcloud); the site entries themselves are set by hand in the admin settings.
 $OCC app:install previewgenerator 2>/dev/null || $OCC app:enable previewgenerator
 $OCC app:install external 2>/dev/null || $OCC app:enable external
@@ -2592,30 +2592,15 @@ fi
 $OCC setupchecks || true
 EOF
     chmod 700 /usr/local/bin/nc-post-setup.sh
-    cat > /etc/systemd/system/nc-preview.service <<'EOF'
-[Unit]
-Description=Nextcloud: generate previews for new files
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/docker exec -u www-data nextcloud-app-1 php occ preview:pre-generate
-EOF
-    cat > /etc/systemd/system/nc-preview.timer <<'EOF'
-[Unit]
-Description=Nextcloud: previews daily 06:15
-
-[Timer]
-OnCalendar=*-*-* 06:15:00
-RandomizedDelaySec=5min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-    systemctl daemon-reload
-    systemctl enable nc-preview.timer
+    # 2026-11-04: no nc-preview timer any more. previewgenerator runs its own background job
+    # every 5 minutes; a second pre-generate from a timer collided with it on silo on
+    # 2026-11-03 ("Unable to save a preview because it already exists"). Rev. 13 units go.
+    if [[ -e /etc/systemd/system/nc-preview.timer || -e /etc/systemd/system/nc-preview.service ]]; then
+        systemctl disable --now nc-preview.timer 2>/dev/null || true
+        rm -f /etc/systemd/system/nc-preview.timer /etc/systemd/system/nc-preview.service
+        systemctl daemon-reload
+        systemctl reset-failed nc-preview.service 2>/dev/null || true
+    fi
     {
         printf 'NC_PHONE_REGION=%q\nNC_MAINT_WINDOW=%q\nNC_LOGLEVEL=%q\nNC_DOMAIN=%q\n' "$NC_PHONE_REGION" "$NC_MAINT_WINDOW" "$NC_LOGLEVEL" "$NC_DOMAIN"
         printf 'NC_MAIL_FROM=%q\nNC_MAIL_DOMAIN=%q\nSMTP_HOST=%q\nSMTP_PORT=%q\nSECRETS_IN_DIR=%q\n' \
@@ -4489,7 +4474,7 @@ verify() {
     chk "cloud-init disabled"              "test -f /etc/cloud/cloud-init.disabled || test ! -d /etc/cloud"
     chk "Caddy may write /var/log/caddy"   "systemctl show caddy -p ReadWritePaths | grep -q /var/log/caddy"
     chk "Caddy access log active"          "test -s /var/log/caddy/next.log"
-    chk "NC preview timer active"          "systemctl is-active -q nc-preview.timer"
+    chk "NC preview: no extra timer"       "! test -e /etc/systemd/system/nc-preview.timer"
     chk "NC apps deck+guests+webauthn"     "docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -qE '^  - deck:' && docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -q twofactor_webauthn && docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -q 'guests:'"
     chk "NC links need password, 14 days"  "[[ \"\$(docker exec -u www-data nextcloud-app-1 php occ config:app:get core shareapi_enforce_links_password)\" =~ ^(1|true|yes)$ && \"\$(docker exec -u www-data nextcloud-app-1 php occ config:app:get core shareapi_expire_after_n_days)\" == 14 ]]"
     chk "NC trash bin 14 days"             "[[ \"\$(docker exec -u www-data nextcloud-app-1 php occ config:system:get trashbin_retention_obligation)\" == '14, 14' ]]"
