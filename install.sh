@@ -2523,6 +2523,16 @@ $OCC config:system:set trashbin_retention_obligation --value="14, 14"
 # 2026-10-31: settings made by hand on silo between 2026-10-12 and 2026-10-30.
 # No share mails: two accounts carry the owner's address, every share mailed him (2026-10-27).
 $OCC config:system:set sharing.enable_share_mail --type=boolean --value=false
+# 2026-11-04 (owner): no info mails at all. Activity mails are off by default for new
+# accounts (group membership, Talk, circles were on), the notifications app sends no reminder
+# mails. The bell in the web interface stays.
+for k in $($OCC config:list activity 2>/dev/null | grep -oE '"notify_email_[a-z_]+": *"?1"?' | grep -oE 'notify_email_[a-z_]+'); do
+    $OCC config:app:set activity "$k" --value=0 >/dev/null
+done
+for k in group_settings spreed circles_as_moderator; do
+    $OCC config:app:set activity "notify_email_$k" --value=0 >/dev/null
+done
+$OCC config:app:set notifications setting_batchtime --value=0 >/dev/null
 for k in verify_peer verify_peer_name; do
     $OCC config:system:set mail_smtpstreamoptions ssl "$k" --type=boolean --value=true
 done

@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Versions follow a SemVe
 ## [Unreleased] - Rev. 13, in progress
 
 ### Changed
+- **No info mails from Nextcloud** (2026-11-04, as on silo): `nc-post-setup.sh` turns every activity mail off for new accounts (group membership, Talk and circles were on) and sets the notifications reminder mail to never. Share mails were already off. The bell in the web interface stays.
 - **No `nc-preview` timer** (2026-11-04): the app previewgenerator 5.x pre-generates previews in its own background job every 5 minutes. The extra daily `preview:pre-generate` from the timer collided with it on silo on 2026-11-03 and failed ("Unable to save a preview because it already exists"). `nc-post-setup.sh` now removes the Rev. 13 units, and `verify` checks that the timer is gone.
 - **Group Linksperre replaces Baubeteiligte** (2026-11-04, as on silo since 2026-11-03): `nc-post-setup.sh` no longer creates the group Baubeteiligte, which the owner never used. It creates `Linksperre`, which holds every account except the owner, and sets `shareapi_allow_links_exclude_groups` to `["Linksperre"]`. Nextcloud blocks link creation for an account that is in any excluded group, admins included, so a separate group is the only way to leave links to the owner alone. New accounts are added to Linksperre by hand. The group immo.flow is created with the display name "immo".
 
