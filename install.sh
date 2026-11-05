@@ -434,6 +434,11 @@ NC_QUOTA_PRESET="${NC_QUOTA_PRESET:-250 MB, 500 MB, 1 GB, 5 GB, 10 GB}"   # quot
 NC_THEMING_NAME="${NC_THEMING_NAME:-}"    # product name on the login page; empty = keep
 NC_THEME="${NC_THEME:-}"                  # theme dir under html/themes, CSS from $EXTRAS_DIR/nextcloud/theme-<name>-server.css
 NC_TUNNEL_DOMAIN="${NC_TUNNEL_DOMAIN:-}"  # Nextcloud also under this name, reachable only from the WireGuard net
+# 2026-11-05: defaults for new accounts and one colour for the whole interface; empty = keep.
+NC_DEFAULT_LANGUAGE="${NC_DEFAULT_LANGUAGE:-}"   # e.g. de
+NC_DEFAULT_LOCALE="${NC_DEFAULT_LOCALE:-}"       # e.g. de_DE (also sets Monday as first day of the week)
+NC_DEFAULT_TIMEZONE="${NC_DEFAULT_TIMEZONE:-}"   # e.g. Europe/Berlin
+NC_THEMING_COLOR="${NC_THEMING_COLOR:-}"         # e.g. #2d73be: accent and background colour (background = colour only)
 # Private files that do not belong into this public repository (calendar IDs, own tools,
 # own Nextcloud app, menu colours) are read from this directory; layout in phase 18.
 EXTRAS_DIR="${EXTRAS_DIR:-/root/install-extras}"
@@ -2534,6 +2539,18 @@ for k in group_settings spreed circles_as_moderator; do
     $OCC config:app:set activity "notify_email_$k" --value=0 >/dev/null
 done
 $OCC config:app:set notifications setting_batchtime --value=0 >/dev/null
+# 2026-11-05: if an account switches an activity mail on, it comes once a day, not hourly;
+# the call sound in Talk is on for new accounts.
+$OCC config:app:set activity notify_setting_batchtime --value=86400 >/dev/null
+$OCC config:app:set notifications sound_talk --type=boolean --value=true >/dev/null
+[[ -z "$NC_DEFAULT_LANGUAGE" ]] || $OCC config:system:set default_language --value="$NC_DEFAULT_LANGUAGE"
+[[ -z "$NC_DEFAULT_LOCALE" ]]   || $OCC config:system:set default_locale --value="$NC_DEFAULT_LOCALE"
+[[ -z "$NC_DEFAULT_TIMEZONE" ]] || $OCC config:system:set default_timezone --value="$NC_DEFAULT_TIMEZONE"
+if [[ -n "$NC_THEMING_COLOR" ]]; then
+    $OCC theming:config primary_color "$NC_THEMING_COLOR"
+    $OCC theming:config background_color "$NC_THEMING_COLOR"
+    $OCC config:app:set theming backgroundMime --value=backgroundColor >/dev/null
+fi
 for k in verify_peer verify_peer_name; do
     $OCC config:system:set mail_smtpstreamoptions ssl "$k" --type=boolean --value=true
 done
@@ -2618,6 +2635,8 @@ EOF
             "$NC_MAIL_FROM" "$NC_MAIL_DOMAIN" "$SMTP_HOST" "$SMTP_PORT" "$SECRETS_IN_DIR"
         printf 'NC_QUOTA_PRESET=%q\nNC_THEMING_NAME=%q\nNC_THEME=%q\nNC_TUNNEL_DOMAIN=%q\nEXTRAS_DIR=%q\nNCDATA_DIR=%q\n' \
             "$NC_QUOTA_PRESET" "$NC_THEMING_NAME" "$NC_THEME" "$NC_TUNNEL_DOMAIN" "$EXTRAS_DIR" "$NCDATA_DIR"
+        printf 'NC_DEFAULT_LANGUAGE=%q\nNC_DEFAULT_LOCALE=%q\nNC_DEFAULT_TIMEZONE=%q\nNC_THEMING_COLOR=%q\n' \
+            "$NC_DEFAULT_LANGUAGE" "$NC_DEFAULT_LOCALE" "$NC_DEFAULT_TIMEZONE" "$NC_THEMING_COLOR"
     } > /etc/nc-post-setup.env
     chmod 600 /etc/nc-post-setup.env
 

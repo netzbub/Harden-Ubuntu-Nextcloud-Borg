@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Versions follow a SemVe
 ## [Unreleased] - Rev. 13, in progress
 
 ### Changed
+- **Defaults for new accounts and one colour** (2026-11-05, as on silo): `NC_DEFAULT_LANGUAGE`, `NC_DEFAULT_LOCALE` (de_DE also makes Monday the first day of the week) and `NC_DEFAULT_TIMEZONE` set the system defaults; `NC_THEMING_COLOR` sets accent and background colour of the instance, background as colour only. Activity mails, where an account switches one on, come daily instead of hourly; the Talk call sound is on for new accounts.
 - **A Borg warning no longer fails the backup** (2026-11-04, production server 2026-10-28 and 2026-11-04): `borg create` exits 1 on a warning, typically "file changed while we backed it up" for the live systemd journal. The archive is complete then, but under `set -e` `backup-server.sh` stopped, skipped prune, compact and check, and raised the failure alarm. Exit code 1 is now accepted; 2 and above still fail.
 - **App Done in the app set** (2026-11-04, found by comparing the test server with silo): installed by hand on silo, now in the list of `nc-post-setup.sh`.
 - **Phase 18 goes on without the doku password** (2026-11-04, test run): a missing `$SECRETS_IN_DIR/doku-basic-auth` aborted phase 18, so davsync, mail-auswertung and nc-patch-update were never set up. The handbook site is now skipped with a warning.

@@ -120,6 +120,10 @@ SMTP_FROM="admin@example.com"
 # NC_THEMING_NAME="example"
 # NC_THEME=""                         # CSS from $EXTRAS_DIR/nextcloud/theme-<name>-server.css
 # NC_TUNNEL_DOMAIN="tunnel.example.com"   # reachable only from the WireGuard net
+# NC_DEFAULT_LANGUAGE="de"           # 2026-11-05: defaults for new accounts
+# NC_DEFAULT_LOCALE="de_DE"          # also makes Monday the first day of the week
+# NC_DEFAULT_TIMEZONE="Europe/Berlin"
+# NC_THEMING_COLOR="#2d73be"         # accent and background colour of the instance
 # EXTRAS_DIR="/root/install-extras"   # private files, never in this repository (layout: phase 18)
 
 # --- Optional phase 18 (2026-10-31): owner extras ---
