@@ -432,7 +432,7 @@ AV_INFECTED_ACTION="${AV_INFECTED_ACTION:-only_log}"   # only_log | delete
 NC_OPCACHE_MB="${NC_OPCACHE_MB:-256}"     # opcache.memory_consumption; the admin overview warned at 128
 NC_QUOTA_PRESET="${NC_QUOTA_PRESET:-250 MB, 500 MB, 1 GB, 5 GB, 10 GB}"   # quota choices in the account list
 NC_THEMING_NAME="${NC_THEMING_NAME:-}"    # product name on the login page; empty = keep
-NC_THEME="${NC_THEME:-}"                  # theme dir under html/themes, CSS from $EXTRAS_DIR/nextcloud/theme-<name>-server.css
+NC_THEME="${NC_THEME:-}"                  # theme dir under html/themes, CSS from $EXTRAS_DIR/nextcloud/theme-<name>-server.css; leave empty with the app Logo
 NC_TUNNEL_DOMAIN="${NC_TUNNEL_DOMAIN:-}"  # Nextcloud also under this name, reachable only from the WireGuard net
 # 2026-11-05: defaults for new accounts and one colour for the whole interface; empty = keep.
 NC_DEFAULT_LANGUAGE="${NC_DEFAULT_LANGUAGE:-}"   # e.g. de
@@ -2594,6 +2594,21 @@ if [[ -f "$EXTRAS_DIR/dividere/appinfo/info.xml" ]]; then
     cp -R "$EXTRAS_DIR/dividere/." /srv/nextcloud/html/custom_apps/dividere/
     chown -R 33:33 /srv/nextcloud/html/custom_apps/dividere
     $OCC app:enable dividere --groups admin || echo "WARN: app dividere not enabled"
+fi
+# 2026-11-06: Logo, the own app for the brand: name and slogan from Design in the login
+# page and the header, a sliding login block, the immo.flow link for that group, the
+# light theme for new accounts and a note on two-factor apps in the welcome mail. It
+# replaces the theme dir (NC_THEME): with a theme set, Design hides logo, background
+# and colour.
+if [[ -f "$EXTRAS_DIR/logo/appinfo/info.xml" ]]; then
+    install -d -o 33 -g 33 -m 755 /srv/nextcloud/html/custom_apps/logo
+    cp -R "$EXTRAS_DIR/logo/." /srv/nextcloud/html/custom_apps/logo/
+    chown -R 33:33 /srv/nextcloud/html/custom_apps/logo
+    if $OCC app:enable logo; then
+        $OCC config:system:set mail_template_class --value='OCA\Logo\Mail\EMailTemplate' >/dev/null
+    else
+        echo "WARN: app logo not enabled"
+    fi
 fi
 # 2026-11-03: account template from $EXTRAS_DIR/nextcloud/skeleton (the owner's standard
 # folders Templates, Photos, Documents). Nextcloud copies it into a new account on its first
