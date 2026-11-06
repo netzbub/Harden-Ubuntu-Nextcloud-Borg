@@ -359,6 +359,8 @@ SWAPFILE_SIZE_GB="${SWAPFILE_SIZE_GB:-0}"
 # Default off: an existing installation must behave exactly as before.
 ENABLE_IMMO="${ENABLE_IMMO:-no}"
 IMMO_DOMAIN="${IMMO_DOMAIN:-}"             # e.g. "immo.example.com" - Rev.13: several names, space or comma separated
+IMMO_NC_LOGIN="${IMMO_NC_LOGIN:-yes}"      # 2026-11-06: immo.flow logs in through Nextcloud (OAuth client immo.flow, app logout)
+IMMO_NOTFALL_DOMAIN="${IMMO_NOTFALL_DOMAIN:-}"  # emergency password login for immo.flow, WireGuard net only (e.g. notfall.example.com)
 IMMO_DIR="${IMMO_DIR:-/srv/immo}"
 IMMO_USER="${IMMO_USER:-immo}"
 IMMO_DB="${IMMO_DB:-immo}"
@@ -2610,6 +2612,21 @@ if [[ -f "$EXTRAS_DIR/logo/appinfo/info.xml" ]]; then
         echo "WARN: app logo not enabled"
     fi
 fi
+# 2026-11-06: logout, the own app for the browser session: a login holds a fixed period
+# from the password (6 hours, 96 for the accounts in its setting lang_konten), logging
+# out of immo.flow ends the Nextcloud session too, accounts only in immo.flow land on
+# immo.flow after the login, and the grant page of the OAuth client immo.flow is
+# confirmed at once. The remember-me cookie never has to outlive the longest period.
+if [[ -f "$EXTRAS_DIR/logout/appinfo/info.xml" ]]; then
+    install -d -o 33 -g 33 -m 755 /srv/nextcloud/html/custom_apps/logout
+    cp -R "$EXTRAS_DIR/logout/." /srv/nextcloud/html/custom_apps/logout/
+    chown -R 33:33 /srv/nextcloud/html/custom_apps/logout
+    if $OCC app:enable logout; then
+        $OCC config:system:set remember_login_cookie_lifetime --value=345600 --type=integer >/dev/null
+    else
+        echo "WARN: app logout not enabled"
+    fi
+fi
 # 2026-11-03: account template from $EXTRAS_DIR/nextcloud/skeleton (the owner's standard
 # folders Templates, Photos, Documents). Nextcloud copies it into a new account on its first
 # login; existing accounts are not touched. It lives in the data dir because the container
@@ -3212,6 +3229,34 @@ EOF
     if grep -q '^IMAP_' "$IMMO_WEB_ENV"; then die "$IMMO_WEB_ENV holds IMAP values - the web side must never see them."; fi
     log "Env files written: $IMMO_DIR/.env (600 $IMMO_USER) and $IMMO_WEB_ENV (640 root:$IMMO_WEB_USER)."
 
+    # 2026-11-06: login through Nextcloud. immo.flow is the OAuth client 'immo.flow'; the
+    # app logout (nc-post-setup) confirms its grant page, ends both sessions on logout and
+    # limits a browser login. The client secret goes straight into $IMMO_WEB_ENV and is
+    # printed nowhere. The groups immo.flow (access), immo.admin and immo.gast give the
+    # role. NEXTCLOUD_ANMELDUNG=aus in $IMMO_WEB_ENV falls back to the password login.
+    if [[ "$IMMO_NC_LOGIN" == "yes" ]]; then
+        local nc_occ="docker exec -u www-data nextcloud-app-1 php occ" oauth_json
+        if ! docker inspect -f '{{.State.Running}}' nextcloud-app-1 2>/dev/null | grep -qx true; then
+            warn "Nextcloud not running - no OAuth client for immo.flow. Run phase13 again later."
+        else
+            if ! grep -q '^NEXTCLOUD_CLIENT_ID=.' "$IMMO_WEB_ENV"; then
+                oauth_json="$($nc_occ oauth2:add-client --output=json immo.flow "https://${IMMO_DOMAIN%%[ ,]*}/anmelden.php")" \
+                    || die "Phase 13: oauth2:add-client failed."
+                env_set "$IMMO_WEB_ENV" NEXTCLOUD_CLIENT_ID "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["clientId"])' <<<"$oauth_json")"
+                env_set "$IMMO_WEB_ENV" NEXTCLOUD_CLIENT_GEHEIMNIS "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["clientSecret"])' <<<"$oauth_json")"
+                oauth_json=""
+            fi
+            $nc_occ config:app:set oauth2 skipAuthPickerApplications --value='["immo.flow"]' --type=array >/dev/null
+            env_set "$IMMO_WEB_ENV" NEXTCLOUD_URL "https://$NC_DOMAIN"
+            env_set "$IMMO_WEB_ENV" NEXTCLOUD_GRUPPE_ZUGANG immo.flow
+            env_set "$IMMO_WEB_ENV" NEXTCLOUD_GRUPPE_ADMIN immo.admin
+            env_set "$IMMO_WEB_ENV" NEXTCLOUD_GRUPPE_GAST immo.gast
+            env_set "$IMMO_WEB_ENV" NOTZUGANG_NETZ "${WG_NET}.0/24"
+            grep -q '^NEXTCLOUD_ANMELDUNG=' "$IMMO_WEB_ENV" || env_set "$IMMO_WEB_ENV" NEXTCLOUD_ANMELDUNG an
+            chown root:"$IMMO_WEB_USER" "$IMMO_WEB_ENV"; chmod 640 "$IMMO_WEB_ENV"
+        fi
+    fi
+
     # --- PHP-FPM pool. Own pool, own user, own socket; the stock www pool is
     # switched off because nothing uses it and every listening pool is surface.
     if [[ -f /etc/php/8.3/fpm/pool.d/www.conf ]]; then
@@ -3382,6 +3427,41 @@ $immo_sites {
 }
 EOF
     chmod 644 "$CADDY_CONFD/20-immo.caddy"
+    # 2026-11-06: emergency password login for immo.flow while Nextcloud is down. Only
+    # from the WireGuard net; the name resolves publicly only for the certificate, the
+    # admin machine maps it to ${WG_NET}.1 in /etc/hosts. Everything outside one handle
+    # block, because 'respond' comes after 'handle' in Caddy's directive order.
+    if [[ -n "$IMMO_NOTFALL_DOMAIN" ]]; then
+        dns_gate "$IMMO_NOTFALL_DOMAIN"
+        cat > "$CADDY_CONFD/21-notfall.caddy" <<EOF
+$IMMO_NOTFALL_DOMAIN {
+    import protokoll-sso immo
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy strict-origin-when-cross-origin
+    @fremd not remote_ip ${WG_NET}.0/24
+    handle @fremd {
+        respond "Nur ueber den Tunnel erreichbar." 403
+    }
+    handle {
+        root * $IMMO_WEB_DIR
+        encode zstd gzip
+        @verborgen path /inc/* /bookmarklets/*
+        respond @verborgen 404
+        @punktdatei {
+            path_regexp /\\.
+            not path /.well-known/*
+        }
+        respond @punktdatei 404
+        php_fastcgi unix//run/php/immo-web.sock
+        file_server
+    }
+}
+EOF
+        chmod 644 "$CADDY_CONFD/21-notfall.caddy"
+    else
+        rm -f "$CADDY_CONFD/21-notfall.caddy"
+    fi
     caddy_apply
 
     # --- Python environment. Only built once the code is actually deployed; the
@@ -4567,6 +4647,8 @@ verify() {
         chk "immo: database exists"        "mariadb -N -e \"SHOW DATABASES\" | grep -qx \"$IMMO_DB\""
         chk "immo: Caddy site file"        "test -f /etc/caddy/conf.d/20-immo.caddy"
         chk "immo: frame-ancestors set"    "grep -q 'frame-ancestors' /etc/caddy/conf.d/20-immo.caddy"
+        [[ "$IMMO_NC_LOGIN" != "yes" ]] || chk "immo: login through Nextcloud (app logout, client)" "docker exec -u www-data nextcloud-app-1 php occ config:app:get logout enabled | grep -qx yes && grep -q '^NEXTCLOUD_ANMELDUNG=an' \"$IMMO_WEB_ENV\" && grep -q '^NEXTCLOUD_CLIENT_ID=.' \"$IMMO_WEB_ENV\""
+        [[ -z "$IMMO_NOTFALL_DOMAIN" ]] || chk "immo: emergency site $IMMO_NOTFALL_DOMAIN (WireGuard only)" "grep -q 'not remote_ip ${WG_NET}.0/24' /etc/caddy/conf.d/21-notfall.caddy && [[ \"\$(stat -c %a /etc/caddy/conf.d/21-notfall.caddy)\" == 644 ]]"
         P=/etc/php/8.3/fpm/pool.d/immo-web.conf
         chk "immo: SameSite=Lax in pool"   "grep -q 'session.cookie_samesite. = Lax' $P"
         chk "immo: allow_url_fopen off"    "grep -q '^php_admin_flag.allow_url_fopen. = off' $P"

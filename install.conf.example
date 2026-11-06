@@ -71,6 +71,8 @@ SMTP_FROM="admin@example.com"
 # --- Optional phase 13: immo.flow (second PHP project with its own MariaDB) ---
 # ENABLE_IMMO="no"
 # IMMO_DOMAIN="immo.example.com"
+# IMMO_NC_LOGIN="yes"                    # login through Nextcloud (OAuth client immo.flow, app logout from EXTRAS_DIR)
+# IMMO_NOTFALL_DOMAIN="notfall.example.com"   # emergency password login, reachable only from the WireGuard net
 # IMMO_DIR="/srv/immo"
 # IMMO_USER="immo"
 # IMMO_DB="immo"
