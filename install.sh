@@ -2492,6 +2492,9 @@ fi
 # New accounts have to be added to Linksperre by hand.
 $OCC group:add --display-name=immo immo.flow >/dev/null 2>&1 || true
 $OCC group:add Linksperre >/dev/null 2>&1 || true
+# 2026-11-07 (owner): Teilensperre may not share at all - no accounts, no groups, no links,
+# no resharing; others can still share with its members. Empty by default.
+$OCC group:add Teilensperre >/dev/null 2>&1 || true
 # Sharing: no resharing, read-only by default, links only with password and max. 14 days,
 # no upload via links, sharing only within the own group (admin exempt), no links for
 # Linksperre, no federation, no global address book.
@@ -2513,7 +2516,10 @@ cs shareapi_allow_public_upload no
 cs shareapi_allow_view_without_download no
 cb shareapi_allow_federation_on_public_shares false
 cs shareapi_only_share_with_group_members yes
-cs shareapi_only_share_with_group_members_exclude_group_list '["admin"]'
+# 2026-11-07: Alle holds every account and would make everyone a group member of everyone.
+cs shareapi_only_share_with_group_members_exclude_group_list '["admin","Alle"]'
+cs shareapi_exclude_groups yes
+cs shareapi_exclude_groups_list '["Teilensperre"]'
 cs shareapi_allow_links_exclude_groups '["Linksperre"]'
 cs shareapi_restrict_user_enumeration_to_group yes
 cs shareapi_restrict_user_enumeration_full_match yes
