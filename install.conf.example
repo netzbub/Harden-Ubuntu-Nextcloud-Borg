@@ -73,6 +73,9 @@ SMTP_FROM="admin@example.com"
 # IMMO_DOMAIN="immo.example.com"
 # IMMO_NC_LOGIN="yes"                    # login through Nextcloud (OAuth client immo.flow, app logout from EXTRAS_DIR)
 # IMMO_NOTFALL_DOMAIN="notfall.example.com"   # emergency password login, reachable only from the WireGuard net
+# IMMO_REPO="git@github.com:owner/immo.flow.git"   # mirror on the server and immo-uebernahme
+# IMMO_DEV_DOMAIN="dev.example.com"      # development copy, WireGuard net only; needs IMMO_REPO
+# IMMO_DEV_SSH_KEY=""                     # comment of the admin key that may log in as immo-dev (empty = all)
 # IMMO_DIR="/srv/immo"
 # IMMO_USER="immo"
 # IMMO_DB="immo"

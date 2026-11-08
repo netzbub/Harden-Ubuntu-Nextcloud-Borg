@@ -361,6 +361,9 @@ ENABLE_IMMO="${ENABLE_IMMO:-no}"
 IMMO_DOMAIN="${IMMO_DOMAIN:-}"             # e.g. "immo.example.com" - Rev.13: several names, space or comma separated
 IMMO_NC_LOGIN="${IMMO_NC_LOGIN:-yes}"      # 2026-11-06: immo.flow logs in through Nextcloud (OAuth client immo.flow, app logout)
 IMMO_NOTFALL_DOMAIN="${IMMO_NOTFALL_DOMAIN:-}"  # emergency password login for immo.flow, WireGuard net only (e.g. notfall.example.com)
+IMMO_REPO="${IMMO_REPO:-}"                 # 2026-11-08: ssh URL of the immo.flow repository (git@github.com:owner/repo.git) - mirror, immo-uebernahme
+IMMO_DEV_DOMAIN="${IMMO_DEV_DOMAIN:-}"     # development copy (e.g. dev.example.com), WireGuard net only; needs IMMO_REPO
+IMMO_DEV_SSH_KEY="${IMMO_DEV_SSH_KEY:-}"   # comment of the admin key that may log in as immo-dev; empty = every admin key
 IMMO_DIR="${IMMO_DIR:-/srv/immo}"
 IMMO_USER="${IMMO_USER:-immo}"
 IMMO_DB="${IMMO_DB:-immo}"
@@ -960,6 +963,9 @@ phase2() {
     rm -f /etc/ssh/sshd_config.d/99-hih.conf /etc/ssh/sshd_config.d/10-haertung.conf \
           /etc/systemd/system/ssh.socket.d/10-port.conf
 
+    # 2026-11-08: the development account of immo.flow logs in with the admin's key.
+    ssh_users="$ADMIN_USER"
+    [[ "$ENABLE_IMMO" != yes || -z "$IMMO_DEV_DOMAIN" || -z "$IMMO_REPO" ]] || ssh_users="$ADMIN_USER immo-dev"
     cat > /etc/ssh/sshd_config.d/10-hardening.conf <<EOF
 # Hardening drop-in - first value wins, 10- sorts before all other drop-ins
 # (exception: 'Port' is additive - so verify also checks that 22 is not listening)
@@ -970,7 +976,7 @@ PermitEmptyPasswords no
 PubkeyAuthentication yes
 KbdInteractiveAuthentication no
 UsePAM yes
-AllowUsers $ADMIN_USER
+AllowUsers $ssh_users
 LoginGraceTime 20
 MaxAuthTries 3
 MaxSessions 4
@@ -2495,20 +2501,23 @@ $OCC group:add Linksperre >/dev/null 2>&1 || true
 # 2026-11-07 (owner): Teilensperre may not share at all - no accounts, no groups, no links,
 # no resharing; others can still share with its members. Empty by default.
 $OCC group:add Teilensperre >/dev/null 2>&1 || true
-# Sharing: no resharing, read-only by default, links only with password and max. 14 days,
+# Sharing: no resharing, read-only by default, links without password and max. 28 days,
 # no upload via links, sharing only within the own group (admin exempt), no links for
 # Linksperre, no federation, no global address book.
 cs() { $OCC config:app:set core "$1" --value="$2" >/dev/null; }
 cb() { $OCC config:app:set core "$1" --type=boolean --value="$2" >/dev/null; }
 cs shareapi_allow_resharing no
 # 2026-10-27 (owner): new shares default to read, create and edit (7, was 1) and carry no
-# preset expiry date for accounts and groups (was yes); link shares keep their 14 days.
+# preset expiry date for accounts and groups (was yes); link shares keep their expiry.
 cs shareapi_default_permissions 7
-cb shareapi_enable_link_password_by_default true
-cb shareapi_enforce_links_password true
+# 2026-11-08 (owner): links without password - a password sent in the same mail protects
+# nothing, a second channel is too much for the other side. Expiry stays enforced.
+cb shareapi_enable_link_password_by_default false
+cb shareapi_enforce_links_password false
 cb shareapi_default_expire_date true
 cb shareapi_enforce_expire_date true
-cs shareapi_expire_after_n_days 14
+# 2026-11-08 (owner): links hold 4 weeks (was 14 days).
+cs shareapi_expire_after_n_days 28
 cs shareapi_default_internal_expire_date no
 cs shareapi_enforce_internal_expire_date no
 cs shareapi_internal_expire_after_n_days 90
@@ -2517,7 +2526,9 @@ cs shareapi_allow_view_without_download no
 cb shareapi_allow_federation_on_public_shares false
 cs shareapi_only_share_with_group_members yes
 # 2026-11-07: Alle holds every account and would make everyone a group member of everyone.
-cs shareapi_only_share_with_group_members_exclude_group_list '["admin","Alle"]'
+# 2026-11-08 (owner): Linksperre likewise - it blocks links and must not decide who
+# may share with whom.
+cs shareapi_only_share_with_group_members_exclude_group_list '["admin","Alle","Linksperre"]'
 cs shareapi_exclude_groups yes
 cs shareapi_exclude_groups_list '["Teilensperre"]'
 cs shareapi_allow_links_exclude_groups '["Linksperre"]'
@@ -3105,6 +3116,25 @@ EOF
 }
 
 
+immo_git_key() {  # immo_git_key <user> <home> <host> <comment> - ssh key and known host for git
+    # 2026-11-08: deploy keys of immo-dev and immo-spiegel. github.com is checked against
+    # its published fingerprint; for another host the scanned key is trusted on first use.
+    local u="$1" h="$2" host="$3" c="$4"
+    install -d -o "$u" -g "$u" -m 700 "$h/.ssh"
+    if [[ ! -s "$h/.ssh/known_hosts" ]]; then
+        ssh-keyscan -t ed25519 "$host" 2>/dev/null > "$h/.ssh/known_hosts.new"
+        if [[ "$host" == github.com ]] && ! ssh-keygen -lf "$h/.ssh/known_hosts.new" | grep -q 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU'; then
+            rm -f "$h/.ssh/known_hosts.new"
+            die "github.com host key does not match the published fingerprint."
+        fi
+        mv "$h/.ssh/known_hosts.new" "$h/.ssh/known_hosts"
+        chown "$u:$u" "$h/.ssh/known_hosts"; chmod 600 "$h/.ssh/known_hosts"
+    fi
+    [[ -f "$h/.ssh/id_github" ]] || sudo -u "$u" ssh-keygen -q -t ed25519 -N '' -C "$c" -f "$h/.ssh/id_github"
+    printf 'Host %s\n    IdentityFile ~/.ssh/id_github\n    IdentitiesOnly yes\n' "$host" > "$h/.ssh/config"
+    chown "$u:$u" "$h/.ssh/config"; chmod 600 "$h/.ssh/config"
+}
+
 phase13() {
     require_root
     if [[ "$ENABLE_IMMO" != "yes" ]]; then
@@ -3252,7 +3282,9 @@ EOF
                 env_set "$IMMO_WEB_ENV" NEXTCLOUD_CLIENT_GEHEIMNIS "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["clientSecret"])' <<<"$oauth_json")"
                 oauth_json=""
             fi
-            $nc_occ config:app:set oauth2 skipAuthPickerApplications --value='["immo.flow"]' --type=array >/dev/null
+            local skip='["immo.flow"]'
+            [[ -z "$IMMO_DEV_DOMAIN" || -z "$IMMO_REPO" ]] || skip='["immo.flow","immo.flow-dev"]'
+            $nc_occ config:app:set oauth2 skipAuthPickerApplications --value="$skip" --type=array >/dev/null
             env_set "$IMMO_WEB_ENV" NEXTCLOUD_URL "https://$NC_DOMAIN"
             env_set "$IMMO_WEB_ENV" NEXTCLOUD_GRUPPE_ZUGANG immo.flow
             env_set "$IMMO_WEB_ENV" NEXTCLOUD_GRUPPE_ADMIN immo.admin
@@ -3632,8 +3664,319 @@ chmod 600 /var/backups/immo/immo.sql
 EOF
     chmod 700 /usr/local/lib/backup-pre.d/10-immo-db.sh
 
+    # --- 2026-11-08: table migration lists every file from db/ that is in the database;
+    # immo-uebernahme plays only the missing ones. When the table is new, the files present
+    # count as played - the database comes from a dump of the running system.
+    mariadb "$IMMO_DB" -e "CREATE TABLE IF NOT EXISTS migration (datei VARCHAR(120) NOT NULL PRIMARY KEY, eingespielt DATETIME NOT NULL, quelle VARCHAR(60) NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    if [[ "$(mariadb -N "$IMMO_DB" -e 'SELECT COUNT(*) FROM migration')" == 0 ]]; then
+        local mf
+        for mf in "$IMMO_DIR"/db/[0-9]*.sql; do
+            [[ -e "$mf" && "$(basename "$mf")" =~ ^[0-9A-Za-z_.-]+$ ]] || continue
+            mariadb "$IMMO_DB" -e "INSERT IGNORE INTO migration (datei, eingespielt, quelle) VALUES ('$(basename "$mf")', NOW(), 'phase13')"
+        done
+    fi
+
+    # --- 2026-11-08 (owner): mirror of the repository and immo-uebernahme. The mirror has
+    # its own account with a read-only deploy key - not the write key of immo-dev, the
+    # account it guards against. Rewritten or deleted refs stay in the reflog and nothing
+    # is pruned; Borg keeps the history. immo-uebernahme brings main from the mirror live
+    # and replaces hoch.sh and hoch_code.sh on the Mac; only the owner calls it.
+    if [[ -n "$IMMO_REPO" ]]; then
+        local sp=/srv/immo-spiegel repo_host gs
+        repo_host="${IMMO_REPO#*@}"; repo_host="${repo_host%%:*}"
+        id immo-spiegel &>/dev/null || useradd --system --home-dir "$sp" --shell /usr/sbin/nologin --comment "immo.flow mirror" immo-spiegel
+        install -d -o immo-spiegel -g immo-spiegel -m 750 "$sp"
+        immo_git_key immo-spiegel "$sp" "$repo_host" "immo-spiegel@$(hostname) read"
+        if [[ ! -d "$sp/immo.flow.git" ]] && sudo -u immo-spiegel -H git ls-remote "$IMMO_REPO" &>/dev/null; then
+            sudo -u immo-spiegel -H git clone -q --mirror "$IMMO_REPO" "$sp/immo.flow.git"
+        fi
+        cat > /etc/systemd/system/immo-spiegel.service <<EOF
+[Unit]
+Description=immo.flow: mirror of the repository
+After=network-online.target
+Wants=network-online.target
+OnFailure=immo-fail-mail@%n.service
+
+[Service]
+Type=oneshot
+User=immo-spiegel
+Group=immo-spiegel
+ExecStart=/usr/bin/git -C $sp/immo.flow.git remote update
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=$sp
+EOF
+        cat > /etc/systemd/system/immo-spiegel.timer <<EOF
+[Unit]
+Description=immo.flow: mirror the repository daily
+
+[Timer]
+OnCalendar=*-*-* 05:40:00
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+        systemctl daemon-reload
+        if [[ -d "$sp/immo.flow.git" ]]; then
+            gs="sudo -u immo-spiegel -H git -C $sp/immo.flow.git config"
+            $gs core.logAllRefUpdates always; $gs gc.reflogExpire never; $gs gc.reflogExpireUnreachable never
+            $gs gc.pruneExpire never; $gs remote.origin.prune false; $gs fetch.prune false
+            systemctl enable --now immo-spiegel.timer
+        else
+            systemctl disable --now immo-spiegel.timer 2>/dev/null || true
+            warn "Mirror not cloned - add this key as a READ-ONLY deploy key, then run phase13 again:"
+            warn "  $(cat "$sp/.ssh/id_github.pub")"
+        fi
+
+        install -d -m 750 /var/lib/immo-uebernahme
+        cat > /usr/local/sbin/immo-uebernahme <<'EOF'
+#!/bin/bash
+# immo-uebernahme - bring the pushed state of immo.flow (branch main) live: from the mirror
+# into @IMMO_DIR@ and @IMMO_WEB_DIR@, then every migration in db/ that table migration does
+# not list yet. Called by the owner only: sudo immo-uebernahme (2026-11-08).
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo "Bitte mit sudo aufrufen."; exit 1; }
+SP=/srv/immo-spiegel/immo.flow.git
+STAND=/var/lib/immo-uebernahme/stand
+ADMIN=@ADMIN@
+[[ -d "$SP" ]] || { echo "Kein Spiegel unter $SP."; exit 1; }
+sudo -u immo-spiegel git -C "$SP" remote update >/dev/null
+REV=$(git -C "$SP" rev-parse --short main)
+echo "Auf GitHub (main): $REV  $(git -C "$SP" log -1 --format='%cd  %s' --date=format:'%d.%m.%Y %H:%M' main)"
+echo "Bisher live:       $(cat "$STAND" 2>/dev/null || echo unbekannt)"
+read -r -p "Diesen Stand uebernehmen? (ja/nein) " a
+[[ "$a" == ja ]] || { echo "Nichts geaendert."; exit 0; }
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+git -C "$SP" archive main | tar -x -C "$T"
+( cd "$T" && python3 md_seiten.py >/dev/null )
+echo "Sicherung der Datenbank @IMMO_DB@ ..."
+sudo -u @IMMO_USER@ @IMMO_DIR@/.venv/bin/python3 @IMMO_DIR@/werkzeuge/sicherung_dump.py | tail -1
+# Same exclusions as hoch_code.sh and hoch.sh on the Mac.
+rsync -rlpt --exclude '.DS_Store' --exclude '.env' --exclude '.git/' --exclude '.venv/' --exclude '.archive*/' \
+    --exclude 'archive*/' --exclude 'Auswerten/' --exclude '*Chat*/' --exclude '__pycache__/' --exclude 'protokolle/' \
+    --exclude 'Rechnungen/' --exclude 'Anschreiben.rtf' --exclude 'Kaufpreise/' --exclude 'Mails/' --exclude 'silo-auftrag/' \
+    --exclude '260506 *.xlsx' --exclude '260702_Aidlingen.xlsx' --exclude 'werkzeuge/*.csv' --exclude 'web/' \
+    --exclude 'Pruefung-*/' --exclude '.claude/' "$T"/ "/home/$ADMIN/immo-code/"
+/usr/local/sbin/immo-deploy code
+rsync -rlpt --delete --exclude '.DS_Store' --exclude '.env' --exclude '.htaccess' --exclude '.php-ini' \
+    --exclude '.php-version' --exclude '.well-known/' --exclude '.claude/' "$T"/web/ "/home/$ADMIN/immo-web/"
+/usr/local/sbin/immo-deploy web
+n=0
+for f in @IMMO_DIR@/db/[0-9]*.sql; do
+    d=$(basename "$f")
+    [[ "$d" =~ ^[0-9A-Za-z_.-]+$ ]] || { echo "Dateiname abgelehnt: $d"; exit 1; }
+    [[ -n "$(mysql -N @IMMO_DB@ -e "SELECT 1 FROM migration WHERE datei='$d'")" ]] && continue
+    echo "Migration $d ..."
+    /usr/local/sbin/immo-run db_einspielen "db/$d"
+    mysql @IMMO_DB@ -e "INSERT INTO migration (datei, eingespielt, quelle) VALUES ('$d', NOW(), 'immo-uebernahme $REV')"
+    n=$((n+1))
+done
+echo "$REV $(date '+%d.%m.%Y %H:%M')" > "$STAND"
+logger -t immo-uebernahme "main $REV live, $n migration(s), by ${SUDO_USER:-root}"
+echo "Fertig: $REV ist live, $n Migration(en) eingespielt."
+EOF
+        sed -i "s|@ADMIN@|$ADMIN_USER|g; s|@IMMO_DIR@|$IMMO_DIR|g; s|@IMMO_WEB_DIR@|$IMMO_WEB_DIR|g; s|@IMMO_DB@|$IMMO_DB|g; s|@IMMO_USER@|$IMMO_USER|g" \
+            /usr/local/sbin/immo-uebernahme
+        chmod 750 /usr/local/sbin/immo-uebernahme
+    fi
+
+    # --- 2026-11-08 (owner): development copy at IMMO_DEV_DOMAIN. Account immo-dev without
+    # sudo, logging in with the admin's key; a clone of IMMO_REPO in /srv/immo-dev with a
+    # deploy key that may push; database immo_dev copied from the live one, its user sees
+    # nothing else; a PHP pool of its own that cannot write the code; an OAuth client of its
+    # own; reachable only from the WireGuard net. No timers, no API token, no IMAP: the
+    # development spends no quota and marks no mail read. Claude Code is installed by the
+    # owner as immo-dev; .claude/settings.json is its second, softer fence.
+    if [[ -n "$IMMO_DEV_DOMAIN" && -n "$IMMO_REPO" ]]; then
+        local dev=/srv/immo-dev dev_host dev_pw f restart_caddy=no
+        dev_host="${IMMO_REPO#*@}"; dev_host="${dev_host%%:*}"
+        id immo-dev &>/dev/null || useradd --create-home --home-dir /home/immo-dev --shell /bin/bash --comment "immo.flow development" immo-dev
+        install -d -o immo-dev -g immo-dev -m 750 "$dev"
+        for f in /home/immo-dev/.bashrc /home/immo-dev/.profile; do
+            [[ -f "$f" ]] && ! grep -q '^umask 027' "$f" && sed -i '1i umask 027' "$f"
+        done
+        append_once 'export PATH="$HOME/.local/bin:$PATH"' /home/immo-dev/.bashrc
+        append_once "cd $dev 2>/dev/null" /home/immo-dev/.bashrc
+        install -d -o immo-dev -g immo-dev -m 700 /home/immo-dev/.ssh
+        if [[ ! -s /home/immo-dev/.ssh/authorized_keys ]]; then
+            if [[ -n "$IMMO_DEV_SSH_KEY" ]]; then
+                grep -F -- "$IMMO_DEV_SSH_KEY" "/home/$ADMIN_USER/.ssh/authorized_keys" > /home/immo-dev/.ssh/authorized_keys || true
+            else
+                cp "/home/$ADMIN_USER/.ssh/authorized_keys" /home/immo-dev/.ssh/authorized_keys
+            fi
+            chown immo-dev:immo-dev /home/immo-dev/.ssh/authorized_keys; chmod 600 /home/immo-dev/.ssh/authorized_keys
+        fi
+        immo_git_key immo-dev /home/immo-dev "$dev_host" "immo-dev@$(hostname) deploy"
+        if ! grep -qE '^AllowUsers .*\bimmo-dev\b' /etc/ssh/sshd_config.d/10-hardening.conf; then
+            sed -i 's/^AllowUsers .*/& immo-dev/' /etc/ssh/sshd_config.d/10-hardening.conf
+            sshd -t && systemctl reload ssh
+        fi
+
+        dev_pw="$(gen_secret immo-dev-db-pass 40)"
+        if ! mariadb -N -e "SHOW DATABASES" | grep -qx immo_dev; then
+            mariadb -e "CREATE DATABASE immo_dev CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            mariadb-dump --single-transaction --routines "$IMMO_DB" | mariadb immo_dev
+        fi
+        mariadb -e "CREATE USER IF NOT EXISTS 'immo_dev'@'127.0.0.1' IDENTIFIED BY '$dev_pw'; ALTER USER 'immo_dev'@'127.0.0.1' IDENTIFIED BY '$dev_pw'; GRANT ALL PRIVILEGES ON immo_dev.* TO 'immo_dev'@'127.0.0.1'; FLUSH PRIVILEGES"
+
+        if [[ ! -d "$dev/.git" ]]; then
+            if [[ -z "$(ls -A "$dev")" ]] && sudo -u immo-dev -H git ls-remote "$IMMO_REPO" &>/dev/null; then
+                sudo -u immo-dev -H git clone -q "$IMMO_REPO" "$dev"
+            else
+                warn "immo-dev not cloned - add this key as a deploy key WITH write access, then run phase13 again:"
+                warn "  $(cat /home/immo-dev/.ssh/id_github.pub)"
+            fi
+        fi
+        if [[ -d "$dev/.git" ]]; then
+            for f in eingang/ .claude/ .venv/; do append_once "$f" "$dev/.git/info/exclude"; done
+            install -d -o immo-dev -g immo-dev -m 750 "$dev/eingang" "$dev/.claude"
+            install -m 600 -o immo-dev -g immo-dev /dev/null "$dev/.env.new"
+            printf 'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_NAME=immo_dev\nDB_USER=immo_dev\nDB_PASS=%s\n' "$dev_pw" > "$dev/.env.new"
+            mv "$dev/.env.new" "$dev/.env"
+            install -m 600 -o immo-dev -g immo-dev /dev/null /home/immo-dev/.my.cnf
+            printf '[client]\nhost=127.0.0.1\nuser=immo_dev\npassword=%s\ndatabase=immo_dev\n' "$dev_pw" > /home/immo-dev/.my.cnf
+            if [[ ! -f "$dev/.claude/settings.json" ]]; then
+                cat > "$dev/.claude/settings.json" <<EOF
+{
+  "permissions": {
+    "allow": [
+      "Read($dev/**)", "Edit($dev/**)", "Write($dev/**)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)",
+      "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
+      "Bash($dev/.venv/bin/python3:*)", "Bash(mysql immo_dev:*)", "Bash(php -l:*)",
+      "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(find:*)",
+      "Bash(wc:*)", "Bash(diff:*)", "Bash(sort:*)"
+    ],
+    "deny": [
+      "Read($IMMO_DIR/**)", "Read($IMMO_WEB_DIR/**)", "Read(/etc/immo/**)", "Read(/etc/immo-dev/**)",
+      "Edit($IMMO_DIR/**)", "Edit($IMMO_WEB_DIR/**)", "Edit(/etc/**)",
+      "Write($IMMO_DIR/**)", "Write($IMMO_WEB_DIR/**)", "Write(/etc/**)",
+      "Bash(sudo:*)", "Bash(su:*)",
+      "Bash(/usr/local/sbin/immo-run:*)", "Bash(/usr/local/sbin/immo-deploy:*)", "Bash(/usr/local/sbin/immo-uebernahme:*)",
+      "Bash(immo-run:*)", "Bash(immo-deploy:*)", "Bash(immo-uebernahme:*)",
+      "Bash(git push --force:*)", "Bash(git push -f:*)"
+    ]
+  }
+}
+EOF
+                chown immo-dev:immo-dev "$dev/.claude/settings.json"
+            fi
+            if [[ ! -x "$dev/.venv/bin/python3" && -f "$dev/requirements.txt" ]]; then
+                sudo -u immo-dev -H python3 -m venv "$dev/.venv"
+                sudo -u immo-dev -H "$dev/.venv/bin/pip" install -q -r "$dev/requirements.txt" || warn "pip install for immo-dev failed."
+            fi
+            chmod -R g-w,o-rwx "$dev"
+        fi
+
+        # PHP pool: its own account, group member of immo-dev so it can read the code but
+        # not write it (umask 027 and g-w above). caddy joins the group for the static files;
+        # a new group needs a restart, a reload keeps the old one.
+        id immo-dev-web &>/dev/null || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin immo-dev-web
+        usermod -aG immo-dev immo-dev-web
+        if ! id -nG caddy | tr ' ' '\n' | grep -qx immo-dev; then usermod -aG immo-dev caddy; restart_caddy=yes; fi
+        install -d -m 755 -o root -g root /etc/immo-dev
+        install -d -m 750 -o root -g immo-dev-web /var/lib/immo-dev-web
+        install -d -m 700 -o immo-dev-web -g immo-dev-web /var/lib/immo-dev-web/sessions
+        [[ -f /var/log/php8.3-fpm-immo-dev-web.log ]] || install -m 640 -o immo-dev-web -g immo-dev-web /dev/null /var/log/php8.3-fpm-immo-dev-web.log
+        [[ -f /etc/immo-dev/web.env ]] || install -m 640 -o root -g immo-dev-web /dev/null /etc/immo-dev/web.env
+        env_set /etc/immo-dev/web.env DB_HOST 127.0.0.1
+        env_set /etc/immo-dev/web.env DB_PORT 3306
+        env_set /etc/immo-dev/web.env DB_NAME immo_dev
+        env_set /etc/immo-dev/web.env DB_USER immo_dev
+        env_set /etc/immo-dev/web.env DB_PASS "$dev_pw"
+        env_set /etc/immo-dev/web.env ERFASS_SCHLUESSEL "$(gen_secret immo-dev-erfass-schluessel 32)"
+        env_set /etc/immo-dev/web.env MAIL_ABSENDER "${IMMO_MAIL_FROM:-${SMTP_FROM:-root@$(hostname)}}"
+        # The site is reached through the tunnel only; with the tunnel net as emergency net
+        # every login would be the password one.
+        env_set /etc/immo-dev/web.env NOTZUGANG_NETZ 127.0.0.1/32
+        if [[ "$IMMO_NC_LOGIN" == "yes" ]] && docker inspect -f '{{.State.Running}}' nextcloud-app-1 2>/dev/null | grep -qx true; then
+            local dev_occ="docker exec -u www-data nextcloud-app-1 php occ" dev_json
+            if ! grep -q '^NEXTCLOUD_CLIENT_ID=.' /etc/immo-dev/web.env; then
+                dev_json="$($dev_occ oauth2:add-client --output=json immo.flow-dev "https://$IMMO_DEV_DOMAIN/anmelden.php")" \
+                    || die "Phase 13: oauth2:add-client for immo.flow-dev failed."
+                env_set /etc/immo-dev/web.env NEXTCLOUD_CLIENT_ID "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["clientId"])' <<<"$dev_json")"
+                env_set /etc/immo-dev/web.env NEXTCLOUD_CLIENT_GEHEIMNIS "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["clientSecret"])' <<<"$dev_json")"
+                dev_json=""
+            fi
+            env_set /etc/immo-dev/web.env NEXTCLOUD_URL "https://$NC_DOMAIN"
+            env_set /etc/immo-dev/web.env NEXTCLOUD_GRUPPE_ZUGANG immo.flow
+            env_set /etc/immo-dev/web.env NEXTCLOUD_GRUPPE_ADMIN immo.admin
+            env_set /etc/immo-dev/web.env NEXTCLOUD_GRUPPE_GAST immo.gast
+            grep -q '^NEXTCLOUD_ANMELDUNG=' /etc/immo-dev/web.env || env_set /etc/immo-dev/web.env NEXTCLOUD_ANMELDUNG an
+        fi
+        chown root:immo-dev-web /etc/immo-dev/web.env; chmod 640 /etc/immo-dev/web.env
+        cat > /etc/php/8.3/fpm/pool.d/immo-dev-web.conf <<EOF
+; development copy of immo.flow at $IMMO_DEV_DOMAIN (git clone $dev, database immo_dev)
+[immo-dev-web]
+user = immo-dev-web
+group = immo-dev-web
+listen = /run/php/immo-dev-web.sock
+listen.owner = caddy
+listen.group = caddy
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 4
+pm.process_idle_timeout = 60s
+pm.max_requests = 500
+php_admin_value[open_basedir] = $dev/web:/var/lib/immo-dev-web:/tmp:/usr/share/php:/etc/immo-dev/web.env
+php_admin_value[upload_tmp_dir] = /tmp
+php_admin_value[memory_limit] = 256M
+php_admin_value[post_max_size] = 32M
+php_admin_value[upload_max_filesize] = 32M
+php_admin_value[error_log] = /var/log/php8.3-fpm-immo-dev-web.log
+php_admin_flag[expose_php] = off
+php_admin_flag[allow_url_fopen] = off
+php_admin_value[session.cookie_secure] = 1
+php_admin_value[session.cookie_httponly] = 1
+php_admin_value[session.cookie_samesite] = Lax
+env[IMMO_WEB_ENV] = /etc/immo-dev/web.env
+php_admin_value[session.save_path] = /var/lib/immo-dev-web/sessions
+php_admin_value[session.gc_probability] = 1
+EOF
+        php-fpm8.3 -t && systemctl reload php8.3-fpm
+
+        dns_gate "$IMMO_DEV_DOMAIN"
+        cat > "$CADDY_CONFD/22-dev.caddy" <<EOF
+# 22-dev.caddy - development copy of immo.flow, $dev/web, database immo_dev.
+# Only from ${WG_NET}.0/24 (WireGuard); the admin machine maps the name to ${WG_NET}.1.
+$IMMO_DEV_DOMAIN {
+    import protokoll-sso immo
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy strict-origin-when-cross-origin
+    header X-Robots-Tag "noindex, nofollow"
+    @fremd not remote_ip ${WG_NET}.0/24
+    handle @fremd {
+        respond "Nur ueber den Tunnel erreichbar." 403
+    }
+    handle {
+        root * $dev/web
+        encode zstd gzip
+        @verborgen path /inc/* /bookmarklets/*
+        respond @verborgen 404
+        @punktdatei {
+            path_regexp /\\.
+            not path /.well-known/*
+        }
+        respond @punktdatei 404
+        php_fastcgi unix//run/php/immo-dev-web.sock
+        file_server
+    }
+}
+EOF
+        chmod 644 "$CADDY_CONFD/22-dev.caddy"
+        caddy_apply
+        [[ "$restart_caddy" != yes ]] || systemctl restart caddy
+    else
+        rm -f "$CADDY_CONFD/22-dev.caddy"
+    fi
+
     log "Phase 13 done. Database password: $SECRETS_DIR/immo-db-pass"
-    log "Still to do: deploy with hoch.sh and hoch_code.sh (sudo immo-deploy web or code), check $IMMO_DIR/.env"
+    log "Still to do: deploy with sudo immo-uebernahme (with IMMO_REPO) or hoch.sh and hoch_code.sh, check $IMMO_DIR/.env"
     log "  (DB_HOST=127.0.0.1, DB_NAME=$IMMO_DB, DB_USER=$IMMO_DB_USER), import the dump."
 }
 
@@ -4558,7 +4901,9 @@ verify() {
     chk "SSH does NOT listen on 22"        "! ss -tln | grep -q ':22 '"
     chk "SSH: password login off"          "sshd -T | grep -qx 'passwordauthentication no'"
     chk "SSH: root login off"              "sshd -T | grep -qx 'permitrootlogin no'"
-    chk "SSH: only $ADMIN_USER"            "sshd -T | grep -qx 'allowusers $ADMIN_USER'"
+    ssh_users="$ADMIN_USER"
+    [[ "$ENABLE_IMMO" != yes || -z "$IMMO_DEV_DOMAIN" || -z "$IMMO_REPO" ]] || ssh_users="$ADMIN_USER immo-dev"
+    chk "SSH: only $ssh_users"             "[[ \"\$(sshd -T | awk '/^allowusers/{print \$2}' | sort | xargs)\" == \"$(printf '%s\n' $ssh_users | sort | xargs)\" ]]"
     chk "ufw active"                       "ufw status | grep -q 'Status: active'"
     chk "ufw: port 22 NOT open"            "! ufw status | grep -qE '(^| )22/tcp'"
     chk "fail2ban sshd jail"               "fail2ban-client status sshd"
@@ -4623,7 +4968,7 @@ verify() {
     chk "Caddy access log active"          "test -s /var/log/caddy/next.log"
     chk "NC preview: no extra timer"       "! test -e /etc/systemd/system/nc-preview.timer"
     chk "NC apps deck+guests+webauthn"     "docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -qE '^  - deck:' && docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -q twofactor_webauthn && docker exec -u www-data nextcloud-app-1 php occ app:list --enabled | grep -q 'guests:'"
-    chk "NC links need password, 14 days"  "[[ \"\$(docker exec -u www-data nextcloud-app-1 php occ config:app:get core shareapi_enforce_links_password)\" =~ ^(1|true|yes)$ && \"\$(docker exec -u www-data nextcloud-app-1 php occ config:app:get core shareapi_expire_after_n_days)\" == 14 ]]"
+    chk "NC links without password, 28 days" "[[ ! \"\$(docker exec -u www-data nextcloud-app-1 php occ config:app:get core shareapi_enforce_links_password)\" =~ ^(1|true|yes)$ && \"\$(docker exec -u www-data nextcloud-app-1 php occ config:app:get core shareapi_expire_after_n_days)\" == 28 ]]"
     chk "NC trash bin 14 days"             "[[ \"\$(docker exec -u www-data nextcloud-app-1 php occ config:system:get trashbin_retention_obligation)\" == '14, 14' ]]"
     chk "GRUB without apparmor boot param" "! grep -rq 'apparmor=1' /etc/default/grub.d/ 2>/dev/null"
     # Rev.8 - the six findings from the CIS audit on the test server, 2026-10-03:
@@ -4653,6 +4998,9 @@ verify() {
         chk "immo: database exists"        "mariadb -N -e \"SHOW DATABASES\" | grep -qx \"$IMMO_DB\""
         chk "immo: Caddy site file"        "test -f /etc/caddy/conf.d/20-immo.caddy"
         chk "immo: frame-ancestors set"    "grep -q 'frame-ancestors' /etc/caddy/conf.d/20-immo.caddy"
+        chk "immo: table migration filled"  "[[ \"\$(mariadb -N $IMMO_DB -e 'SELECT COUNT(*) FROM migration')\" -gt 0 ]]"
+        [[ -z "$IMMO_REPO" ]] || chk "immo: mirror, its timer, immo-uebernahme" "test -d /srv/immo-spiegel/immo.flow.git && systemctl is-active -q immo-spiegel.timer && test -x /usr/local/sbin/immo-uebernahme"
+        [[ -z "$IMMO_DEV_DOMAIN" || -z "$IMMO_REPO" ]] || chk "immo: dev site $IMMO_DEV_DOMAIN (WireGuard only), immo_dev without $IMMO_DB" "grep -q 'not remote_ip ${WG_NET}.0/24' /etc/caddy/conf.d/22-dev.caddy && ! mariadb -N -e \"SELECT 1 FROM mysql.db WHERE User='immo_dev' AND Db='$IMMO_DB'\" | grep -q 1"
         [[ "$IMMO_NC_LOGIN" != "yes" ]] || chk "immo: login through Nextcloud (app logout, client)" "docker exec -u www-data nextcloud-app-1 php occ config:app:get logout enabled | grep -qx yes && grep -q '^NEXTCLOUD_ANMELDUNG=an' \"$IMMO_WEB_ENV\" && grep -q '^NEXTCLOUD_CLIENT_ID=.' \"$IMMO_WEB_ENV\""
         [[ -z "$IMMO_NOTFALL_DOMAIN" ]] || chk "immo: emergency site $IMMO_NOTFALL_DOMAIN (WireGuard only)" "grep -q 'not remote_ip ${WG_NET}.0/24' /etc/caddy/conf.d/21-notfall.caddy && [[ \"\$(stat -c %a /etc/caddy/conf.d/21-notfall.caddy)\" == 644 ]]"
         P=/etc/php/8.3/fpm/pool.d/immo-web.conf
