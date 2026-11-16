@@ -3149,7 +3149,8 @@ phase13() {
     # files under web/ passed 'php -l' on 8.3.6 and none used 8.4-only syntax. The
     # third-party PHP repository an 8.4 would have required stays off this machine -
     # an extra apt source on a hardened box is a supply-chain decision, not a detail.
-    apt-get install -y -q php8.3-fpm php8.3-mysql php8.3-mbstring php8.3-curl \
+    # 2026-11-16: php8.3-gd for the fingerprint images of immo.flow.
+    apt-get install -y -q php8.3-fpm php8.3-mysql php8.3-mbstring php8.3-curl php8.3-gd \
         mariadb-server poppler-utils python3-venv
 
     id -u "$IMMO_USER" &>/dev/null || useradd --system --create-home --home-dir "$IMMO_DIR" \
@@ -3745,13 +3746,14 @@ STAND=/var/lib/immo-uebernahme/stand
 ADMIN=@ADMIN@
 [[ -d "$SP" ]] || { echo "Kein Spiegel unter $SP."; exit 1; }
 sudo -u immo-spiegel git -C "$SP" remote update >/dev/null
-REV=$(git -C "$SP" rev-parse --short main)
-echo "Auf GitHub (main): $REV  $(git -C "$SP" log -1 --format='%cd  %s' --date=format:'%d.%m.%Y %H:%M' main)"
+REV=$(sudo -u immo-spiegel git -C "$SP" rev-parse --short main)
+echo "Auf GitHub (main): $REV  $(sudo -u immo-spiegel git -C "$SP" log -1 --format='%cd  %s' --date=format:'%d.%m.%Y %H:%M' main)"
 echo "Bisher live:       $(cat "$STAND" 2>/dev/null || echo unbekannt)"
 read -r -p "Diesen Stand uebernehmen? (ja/nein) " a
 [[ "$a" == ja ]] || { echo "Nichts geaendert."; exit 0; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-git -C "$SP" archive main | tar -x -C "$T"
+# git refuses a repository of another owner (safe.directory), even for root.
+sudo -u immo-spiegel git -C "$SP" archive main | tar -x -C "$T"
 ( cd "$T" && python3 md_seiten.py >/dev/null )
 echo "Sicherung der Datenbank @IMMO_DB@ ..."
 sudo -u @IMMO_USER@ @IMMO_DIR@/.venv/bin/python3 @IMMO_DIR@/werkzeuge/sicherung_dump.py | tail -1
